@@ -1,11 +1,11 @@
-CFLAGS = -Iatop -g -O0 -lz -Wall
+CFLAGS = -Iatop -g -O2 -lz -Wall
 OBJS = cache.o httpd.o json.o output.o rawlog.o version.o
 
 all: submodule bin
-	gcc -o atophttpd $(CFLAGS) $(OBJS)
+	gcc -o atophttpd $(OBJS) $(CFLAGS)
 
 bin: $(OBJS)
-	gcc -o atophttpd $(CFLAGS) $(OBJS)
+	gcc -o atophttpd $(OBJS) $(CFLAGS)
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) $*.c -o $*.o
