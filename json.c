@@ -49,6 +49,7 @@ static void json_print_NFS();
 static void json_print_NET();
 static void json_print_IFB();
 static void json_print_NUM();
+static void json_print_NUC();
 static void json_print_LLC();
 static void json_print_PRG();
 static void json_print_PRC();
@@ -147,6 +148,7 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs,
 		{ "NET",	0,	json_print_NET },
 		{ "IFB",	0,	json_print_IFB },
 		{ "NUM",	0,	json_print_NUM },
+		{ "NUC",	0,	json_print_NUC },
 		{ "LLC",	0,	json_print_LLC },
 
 		{ "PRG",	0,	json_print_PRG },
@@ -903,6 +905,48 @@ static void json_print_NUM(int flags, char *hp, struct sstat *ss, struct tstat *
 			ss->memnuma.numa[i].slabreclaim * pagesize,
 			ss->memnuma.numa[i].shmem * pagesize,
 			ss->memnuma.numa[i].tothp * ss->mem.hugepagesz);
+		output_samp(&defop, buf, buflen);
+	}
+
+	output_samp(&defop, "]", 1);
+}
+
+static void json_print_NUC(int flags, char *hp, struct sstat *ss, struct tstat *ps, int nact)
+{
+	int i;
+	int buflen = 0;
+	char buf[LINE_BUF_SIZE];
+
+	char br[LEN_HP_SIZE];
+	buflen = sprintf(br, ", %s: [", hp);
+	output_samp(&defop, br, buflen);
+
+	for (i = 0; i < ss->cpunuma.nrnuma; i++) {
+		if (i > 0) {
+			output_samp(&defop, ", ", 2);
+		}
+		buflen = snprintf(buf, sizeof(buf), "{\"numanr\": \"%d\", "
+				"\"nrcpu\": %lld, "
+				"\"stime\": %lld, "
+				"\"utime\": %lld, "
+				"\"ntime\": %lld, "
+				"\"itime\": %lld, "
+				"\"wtime\": %lld, "
+				"\"Itime\": %lld, "
+				"\"Stime\": %lld, "
+				"\"steal\": %lld, "
+				"\"guest\": %lld}",
+				ss->cpunuma.numa[i].numanr,
+				ss->cpunuma.numa[i].nrcpu,
+				ss->cpunuma.numa[i].stime,
+				ss->cpunuma.numa[i].utime,
+				ss->cpunuma.numa[i].ntime,
+				ss->cpunuma.numa[i].itime,
+				ss->cpunuma.numa[i].wtime,
+				ss->cpunuma.numa[i].Itime,
+				ss->cpunuma.numa[i].Stime,
+				ss->cpunuma.numa[i].steal,
+				ss->cpunuma.numa[i].guest);
 		output_samp(&defop, buf, buflen);
 	}
 
