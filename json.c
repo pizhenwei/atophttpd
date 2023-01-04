@@ -429,9 +429,12 @@ static void json_print_MEM(int flags, char *hp, struct sstat *ss, struct tstat *
 		"\"shmem\": %lld, "
 		"\"shmrss\": %lld, "
 		"\"shmswp\": %lld, "
+		"\"pagetables\": %lld, "
 		"\"hugepagesz\": %lld, "
 		"\"tothugepage\": %lld, "
-		"\"freehugepage\": %lld}",
+		"\"freehugepage\": %lld, "
+		"\"tcpsk\": %lld, "
+		"\"udpsk\": %lld}",
 		hp,
 		ss->mem.physmem * pagesize,
 		ss->mem.freemem * pagesize,
@@ -444,9 +447,12 @@ static void json_print_MEM(int flags, char *hp, struct sstat *ss, struct tstat *
 		ss->mem.shmem * pagesize,
 		ss->mem.shmrss * pagesize,
 		ss->mem.shmswp * pagesize,
+		ss->mem.pagetables * pagesize,
 		ss->mem.hugepagesz,
 		ss->mem.tothugepage,
-		ss->mem.freehugepage);
+		ss->mem.freehugepage,
+		ss->mem.tcpsock * pagesize,
+		ss->mem.udpsock * pagesize);
 
 	output_samp(&defop, buf, buflen);
 }
@@ -478,10 +484,12 @@ static void json_print_PAG(int flags, char *hp, struct sstat *ss, struct tstat *
 	char buf[LINE_BUF_SIZE];
 
 	buflen = snprintf(buf, sizeof(buf), ", %s: {"
+		"\"stall\": %lld, "
 		"\"compacts\": %lld, "
 		"\"numamigs\": %lld, "
 		"\"migrates\": %lld, "
 		"\"pgscans\": %lld, "
+		"\"pgsteal\": %lld,"
 		"\"allocstall\": %lld, "
 		"\"pgins\": %lld, "
 		"\"pgouts\": %lld, "
@@ -489,10 +497,12 @@ static void json_print_PAG(int flags, char *hp, struct sstat *ss, struct tstat *
 		"\"swouts\": %lld, "
 		"\"oomkills\": %lld}",
 		hp,
+		ss->mem.allocstall,
 		ss->mem.compactstall,
 		ss->mem.numamigrate,
 		ss->mem.pgmigrate,
 		ss->mem.pgscans,
+		ss->mem.pgsteal,
 		ss->mem.allocstall,
 		ss->mem.pgins,
 		ss->mem.pgouts,
@@ -565,6 +575,7 @@ static void json_print_LVM(int flags, char *hp, struct sstat *ss, struct tstat *
 		buflen = snprintf(buf, sizeof(buf), "{\"lvmname\": \"%.19s\", "
 			"\"io_ms\": %lld, "
 			"\"nread\": %lld, "
+			"\"ndiscrd\": %lld, "
 			"\"nrsect\": %lld, "
 			"\"nwrite\": %lld, "
 			"\"nwsect\": %lld, "
@@ -573,6 +584,7 @@ static void json_print_LVM(int flags, char *hp, struct sstat *ss, struct tstat *
 			ss->dsk.lvm[i].name,
 			ss->dsk.lvm[i].io_ms,
 			ss->dsk.lvm[i].nread,
+			ss->dsk.lvm[i].ndisc,
 			ss->dsk.lvm[i].nrsect,
 			ss->dsk.lvm[i].nwrite,
 			ss->dsk.lvm[i].nwsect,
@@ -767,9 +779,13 @@ static void json_print_NET(int flags, char *hp, struct sstat *ss, struct tstat *
 	buflen = snprintf(buf, sizeof(buf), ", \"NET_GENERAL\": {"
 		"\"rpacketsTCP\": %lld, "
 		"\"spacketsTCP\": %lld, "
+		"\"inerrTCP\": %lld, "
+		"\"oresetTCP\": %lld, "
 		"\"activeOpensTCP\": %lld, "
 		"\"passiveOpensTCP\": %lld, "
 		"\"retransSegsTCP\": %lld, "
+		"\"noportUDP\": %lld, "
+		"\"inerrUDP\": %lld, "
 		"\"rpacketsUDP\": %lld, "
 		"\"spacketsUDP\": %lld, "
 		"\"rpacketsIP\": %lld, "
@@ -780,9 +796,13 @@ static void json_print_NET(int flags, char *hp, struct sstat *ss, struct tstat *
 		"\"icmpo\" : %lld}",
 		ss->net.tcp.InSegs,
 		ss->net.tcp.OutSegs,
+		ss->net.tcp.InErrs,
+		ss->net.tcp.OutRsts,
 		ss->net.tcp.ActiveOpens,
 		ss->net.tcp.PassiveOpens,
 		ss->net.tcp.RetransSegs,
+		ss->net.udpv4.NoPorts,
+		ss->net.udpv4.InErrors,
 		ss->net.udpv4.InDatagrams +
 		ss->net.udpv6.Udp6InDatagrams,
 		ss->net.udpv4.OutDatagrams +
@@ -813,19 +833,27 @@ static void json_print_NET(int flags, char *hp, struct sstat *ss, struct tstat *
 			"\"rpack\": %lld, "
 			"\"rbyte\": %lld, "
 			"\"rerrs\": %lld, "
+			"\"rdrops\": %lld, "
 			"\"spack\": %lld, "
 			"\"sbyte\": %lld, "
 			"\"serrs\": %lld, "
+			"\"sdrops\": %lld, "
 			"\"speed\": \"%ld\", "
+			"\"coll\": %lld, "
+			"\"multi\": %lld, "
 			"\"duplex\": %d}",
 			ss->intf.intf[i].name,
 			ss->intf.intf[i].rpack,
 			ss->intf.intf[i].rbyte,
 			ss->intf.intf[i].rerrs,
+			ss->intf.intf[i].rdrop,
 			ss->intf.intf[i].spack,
 			ss->intf.intf[i].sbyte,
 			ss->intf.intf[i].serrs,
+			ss->intf.intf[i].sdrop,
 			ss->intf.intf[i].speed,
+			ss->intf.intf[i].scollis,
+			ss->intf.intf[i].rmultic,
 			ss->intf.intf[i].duplex);
 		output_samp(&defop, buf, buflen);
 	}
@@ -968,7 +996,7 @@ static void json_print_LLC(int flags, char *hp, struct sstat *ss, struct tstat *
 			output_samp(&defop, ", ", 2);
 		}
 		buflen = snprintf(buf, sizeof(buf), "{\"LLC\": \"%3d\", "
-			"\"occupancy\": \"%3.1f%%\", "
+			"\"occupancy\": \"%3.1f\", "
 			"\"mbm_total\": \"%lld\", "
 			"\"mbm_local\": %lld}",
 			ss->llc.perllc[i].id,
