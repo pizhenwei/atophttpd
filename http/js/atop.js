@@ -44,6 +44,7 @@ const DEFAULT_PROC_SHOW_NUM = 200;
 const DEFAULT_CPU_SHOW_NUM = 0;
 const DEFAULT_GPU_SHOW_NUM = 2;
 const DEFAULT_DISK_SHOW_NUM = 1;
+const DEFAULT_LVM_SHOW_NUM = 4;
 const DEFAULT_INTERFACE_SHOW_NUM = 2;
 const DEFAULT_INFINIBAND_SHOW_NUM = 2;
 const DEFAULT_NFS_SHOW_NUM = 2;
@@ -54,6 +55,7 @@ const DEFAULT_LLC_SHOW_NUM = 0;
 var proc_show_num = DEFAULT_PROC_SHOW_NUM;
 var cpu_show_num = DEFAULT_CPU_SHOW_NUM;
 var gpu_show_num = DEFAULT_GPU_SHOW_NUM;
+var lvm_show_num = DEFAULT_LVM_SHOW_NUM;
 var disk_show_num = DEFAULT_DISK_SHOW_NUM;
 var interface_show_num = DEFAULT_INTERFACE_SHOW_NUM;
 var infiniband_show_num = DEFAULT_INFINIBAND_SHOW_NUM;
@@ -172,6 +174,11 @@ function atopList() {
         gpu_show_num = new_gpu_show_num;
     }
 
+    var new_lvm_show_num = prompt("Maxinum lines for LVM statistics (now " + lvm_show_num + "): ", DEFAULT_LVM_SHOW_NUM);
+    if (new_lvm_show_num != null) {
+        lvm_show_num = new_lvm_show_num;
+    }
+
     var new_disk_show_num = prompt("Maxinum lines for disk statistics (now " + disk_show_num + "): ", DEFAULT_DISK_SHOW_NUM);
     if (new_disk_show_num != null) {
         disk_show_num = new_disk_show_num;
@@ -187,7 +194,7 @@ function atopList() {
         infiniband_show_num = new_infiniband_show_num;
     }
 
-    var new_nfs_show_num = prompt("Maxinum lines for infiniband port statistics (now " + nfs_show_num + "): ", DEFAULT_NFS_SHOW_NUM);
+    var new_nfs_show_num = prompt("Maxinum lines for NFS mount statistics (now " + nfs_show_num + "): ", DEFAULT_NFS_SHOW_NUM);
     if (new_nfs_show_num != null) {
         nfs_show_num = new_nfs_show_num;
     }
@@ -371,17 +378,22 @@ function parseAtopHeader(json) {
 
     //SWP line
 
-    //NUM line
+    //NUM NUC line
     json[0]["MEM"]["numanode"] = json[0]["NUM"].length;
 
-    numalist = json[0]["NUM"];
-    numalist.forEach(function (numanode, index) {
+    numa_memlist = json[0]["NUM"];
+    numa_memlist.forEach(function (numanode, index) {
         numanode["numanodeId"] = index;
+        numanode["frag"] = (numanode["frag"] * 1).toFixed(2)
     })
-    if (numa_show_num > numalist.length) {
-        numa_show_num = numalist.length;
+
+    numa_cpulist = json[0]["NUC"];
+    if (numa_show_num > numa_cpulist.length) {
+        numa_show_num = numa_cpulist.length;
     }
-    json[0]["NUM"] = numalist.slice(0, numa_show_num);
+
+    json[0]["NUM"] = numa_memlist.slice(0, numa_show_num);
+    json[0]["NUC"] = numa_cpulist.slice(0, numa_show_num);
 
     //PAG line
 
@@ -394,7 +406,20 @@ function parseAtopHeader(json) {
     json[0]["PSI"]["memfull"] = ((psiEntry["mftot"] / elapsed * 100) > 100) ? 100 : psiEntry["mftot"] / (elapsed * 10000);
     json[0]["PSI"]["cs"] = psiEntry["cs10"].toFixed(0) + "/" + psiEntry["cs60"].toFixed(0) + "/" + psiEntry["cs300"].toFixed(0);
     json[0]["PSI"]["ms"] = psiEntry["ms10"].toFixed(0) + "/" + psiEntry["ms60"].toFixed(0) + "/" + psiEntry["ms300"].toFixed(0);
+    json[0]["PSI"]["mf"] = psiEntry["mf10"].toFixed(0) + "/" + psiEntry["mf60"].toFixed(0) + "/" + psiEntry["mf300"].toFixed(0);
     json[0]["PSI"]["is"] = psiEntry["ios10"].toFixed(0) + "/" + psiEntry["ios60"].toFixed(0) + "/" + psiEntry["ios300"].toFixed(0);
+    json[0]["PSI"]["if"] = psiEntry["iof10"].toFixed(0) + "/" + psiEntry["iof60"].toFixed(0) + "/" + psiEntry["iof300"].toFixed(0);
+
+    //LVM line
+    lvmlist = json[0]["LVM"];
+    lvmlist.forEach(function (lvm, index) {
+        lvm["lvmname"] = lvm["lvmname"].substring(lvm["lvmname"].length - 10)
+        iotot = lvm["nread"] + lvm["nwrite"];
+        lvm["avio"] = (iotot ? lvm["io_ms"] / iotot : 0.0).toFixed(2);
+        lvm["lvmbusy"] = (mstot ? lvm["io_ms"] / mstot : 0).toFixed(2);
+        lvm["MBr/s"] = (lvm["nrsect"] / 2 / 1024 / elapsed).toFixed(1);
+        lvm["MBw/s"] = (lvm["nwsect"] / 2 / 1024 / elapsed).toFixed(1);
+    })
 
     //DSK line
     dsklist = json[0]["DSK"];
@@ -422,8 +447,10 @@ function parseAtopHeader(json) {
     //IFB line
     // TODO
 
-    //LLC line
-    // TODO
+    // LLC line
+    llclist = json[0]["LLC"];
+    llclist.sort(compareOrderLLC);
+    json[0]["LLC"] = llclist.slice(0, LLC_show_num)
 
     // EXTRA
     extra = new Object();
@@ -646,14 +673,15 @@ function repeatAtopHtmlNode(node, arr, percputot) {
                 } else if (["stime_unit_time", "utime_unit_time", "rundelay", "blkdelay"].indexOf(j) !== -1) {
                     map[j] = ParseTimeValue(map[j], hertz, j);
                 } else if (["buffermem", "cachedrt", "cachemem", "commitlim", "committed", "freemem", "freeswap",
-                    "filepage", "physmem", "rgrow", "rsz", "shmrss", "slabmem", "swcac", "totmem", "totswap",
-                    "vexec", "vdata", "vgrow", "vlibs", "vlock", "vmem", "vstack", "wsz", "rmem", "pmem", "vswap"].indexOf(j) !== -1) {
+                    "filepage", "physmem", "rgrow", "rsz","shmem", "shmrss", "shmswp", "slabmem", "swcac", "totmem", "totswap", "slabreclaim", "pagetables",
+                    "vexec", "vdata", "vgrow", "vlibs", "vlock", "vmem", "vstack", "wsz", "rmem", "pmem", "vswap", "tcpsk", "udpsk", "dirtymem", "active", 
+                    "mbm_total", "mbm_local", "inactive"].indexOf(j) !== -1) {
                     map[j] = ParseMemValue(map[j], j);
                 } else if (["rbyte", "sbyte", "speed"].indexOf(j) !== -1) {
                     map[j] = ParseBandwidth(map[j], j);
                 } else if (["minflt", "majflt"].indexOf(j) !== -1) {
                     map[j] = Value2ValueStr(map[j], j);
-                } else if (["cpubusy", "membusy", "diskbusy"].indexOf(j) !== -1) {
+                } else if (["cpubusy", "membusy", "diskbusy", "lvmbusy", "frag", "occupancy"].indexOf(j) !== -1) {
                     map[j] = Value2ValuePercent(map[j], j);
                 }
                 else {
@@ -744,11 +772,11 @@ function ParseMemValue(ByteValue, indicatorName) {
 
     if (ByteValue < unit) {
         result = ByteValue + 'B';
-    } else if (ByteValue < Math.pow(unit, 2)) {
+    } else if (ByteValue < Math.pow(unit, 2) * 0.8) {
         result = (ByteValue / unit).toFixed(1) + "KB";
-    } else if (ByteValue < Math.pow(unit, 3)) {
+    } else if (ByteValue < Math.pow(unit, 3) * 0.8) {
         result = (ByteValue / Math.pow(unit, 2)).toFixed(1) + "MB";
-    } else if (ByteValue < Math.pow(unit, 4)) {
+    } else if (ByteValue < Math.pow(unit, 4) * 0.8) {
         result = (ByteValue / Math.pow(unit, 3)).toFixed(1) + "G";
     } else {
         result = (ByteValue / Math.pow(unit, 4)).toFixed(1) + "T";
@@ -870,6 +898,21 @@ function compareOrderByNet(a, b) {
     }
 
     if (anet_value < bnet_value) {
+        return 1;
+    }
+
+    return 0;
+}
+
+function compareOrderLLC(a, b) {
+    aLLC = a["occupancy"] * 1
+    bLLC = b["occupancy"] * 1
+
+    if (aLLC > bLLC) {
+        return -1;
+    }
+
+    if (aLLC < bLLC) {
         return 1;
     }
 
