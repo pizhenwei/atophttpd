@@ -175,6 +175,9 @@ void cache_sort()
 
 struct cache_t *cache_get_recent()
 {
+	if (!nr_caches)
+		return NULL;
+
 	return caches[nr_caches - 1];
 }
 

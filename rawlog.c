@@ -349,6 +349,9 @@ int rawlog_get_record(time_t ts, char *labels)
 	log_debug("no record @%ld\n", ts);
 
 	cache = cache_get_recent();
+	if (!cache)
+		return -EIO;
+
 	time_t recent_ts = cache->elems[cache->nr_elems - 1].time;
 	if (ts < recent_ts)
 		return -EIO;

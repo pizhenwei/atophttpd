@@ -186,7 +186,11 @@ static void http_showsamp(char *req)
 		return;
 	}
 
-	rawlog_get_record(timestamp, lables);
+	if (rawlog_get_record(timestamp, lables) < 0) {
+		char *err = "missing sample\r\n";
+		http_response_200(err, strlen(err), 0, http_content_type_html);
+		return;
+	}
 }
 
 /* Import a binary file */
