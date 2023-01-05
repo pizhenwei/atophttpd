@@ -1,0 +1,16 @@
+Package: atophttpd
+Version: ATOP_VERSION
+Architecture: amd64
+Maintainer: zhenwei pi <pizhenwei@bytedance.com>
+Installed-Size: ATOPHTTPD_SIZE
+Depends: atop (= ATOP_VERSION)
+Section: admin
+Priority: optional
+Homepage: https://github.com/pizhenwei/atophttpd
+Description: A web style atop(https://www.atoptool.nl).
+ atophttpd depends on atop and reads atop rawlog, provides web
+ service(HTTP 1.1). A user accesses atop by a web browser without
+ login permission of a server, it's also possible to get/analysis
+ statistics of many servers in batch.
+ .
+  Author: zhenwei pi <pizhenwei@bytedance.com> Enhua Zhou <zhouenhua@bytedance.com>

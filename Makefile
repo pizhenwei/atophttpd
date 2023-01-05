@@ -11,6 +11,9 @@ install: bin
 	install -D atophttpd.service $(PREFIX)/lib/systemd/system/atophttpd.service
 	install -D man/atophttpd.1 $(PREFIX)/usr/share/man/man1/atophttpd.1
 
+deb: bin
+	@sh packaging/debian/makedeb.sh `pwd`
+
 bin: $(OBJS)
 	gcc -o $(BIN) $(OBJS) $(CFLAGS)
 
@@ -25,4 +28,4 @@ submodule:
 	git submodule update --init --recursive
 
 clean:
-	@rm -f $(BIN) *.o
+	@rm -f $(BIN) *.o *.deb
