@@ -1,0 +1,13 @@
+[Unit]
+Description=A web style atop(https://www.atoptool.nl)
+Documentation=man:atophttpd(1)
+Requires=atop.service
+
+[Service]
+Type=simple
+Environment="PORT=2867"
+Environment="LOGPATH=/var/log/atop"
+ExecStart=/bin/sh -c 'exec /usr/bin/atophttpd -P ${LOGPATH} -p ${PORT}'
+
+[Install]
+WantedBy=multi-user.target
