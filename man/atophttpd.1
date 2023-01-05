@@ -1,0 +1,43 @@
+.TH ATOPHTTPD 1 "Jan 2023" "Linux"
+.SH NAME
+.B atophttpd
+- A web style atop(https://www.atoptool.nl)
+.SH SYNOPSIS
+.B atophttpd
+[\-h] [\-d] [\-D] [-p PORT] [-P PATH]
+.SH DESCRIPTION
+.I atophttpd
+depends on atop and reads atop rawlog, provides web
+service(HTTP 1.1). A user accesses atop by a web browser without
+login permission of a server, it's also possible to get/analysis
+statistics of many servers in batch.
+
+Since atophttpd access the rawlog of atop, this daemon requires the
+permission of
+.B PATH.
+.SH OPTIONS
+.TP
+\-h
+Print usage message.
+.TP
+\-d
+Run in daemon mode.
+.TP
+\-D
+Run with debug message. (not in daemon mode)
+.TP
+\-p PORT
+Listen to PORT, default 2867.
+.TP
+\-P PATH
+Specify atop log path, default
+.B
+/var/log/atop.
+.SH SOURCE
+https://github.com/pizhenwei/atophttpd
+.SH OS
+Linux
+.SH AUTHOR
+zhenwei pi
+.SH SEE ALSO
+atop(1)
