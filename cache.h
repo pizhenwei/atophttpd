@@ -11,6 +11,9 @@
 #ifndef _CACHE_H_
 #define _CACHE_H_
 
+#include <sys/types.h>
+#include <time.h>
+
 struct cache_elem_t {
 	time_t time;
 	off_t off;

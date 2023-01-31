@@ -1,4 +1,4 @@
-CFLAGS = -Iatop -g -O2 -lz -Wall
+CFLAGS = -Iatop -g -O2 -lz -Wall -std=gnu11
 OBJS = cache.o httpd.o json.o output.o rawlog.o version.o
 BIN = atophttpd
 PREFIX := $(prefix)
