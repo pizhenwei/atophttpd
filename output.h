@@ -12,23 +12,24 @@
 #define _OUTPUT_H_
 
 enum {
-        OUTPUT_STDOUT,
-        OUTPUT_FD,
-        OUTPUT_BUF
+	OUTPUT_STDOUT,
+	OUTPUT_FD,
+	OUTPUT_BUF
 };
 
 struct output {
-        int output_type;
-        union {
-                /* OUTPUT_STDOUT needs no more argument */
-                int fd; /* for OUTPUT_FD */
-                struct output_buf {
-                        char *buf;
-                        int size; /* size of buf, auto grow if not enough */
-                        int offset; /* offset of buf, reset to 0 for next record */
-                } ob; /* OUTPUT_BUF */
-        };
-        void    (*done)(struct output *op);
+	int output_type;
+	union {
+		/* OUTPUT_STDOUT needs no more argument */
+		int fd; /* for OUTPUT_FD */
+		struct output_buf {
+			char *buf;
+			int size; /* size of buf, auto grow if not enough */
+			int offset; /* offset of buf, reset to 0 for next record */
+		} ob; /* OUTPUT_BUF */
+	};
+	void    (*done)(struct output *op);
+	char *encoding;
 };
 
 void output_samp(struct output *op, char *buf, int size);

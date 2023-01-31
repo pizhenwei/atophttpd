@@ -52,17 +52,21 @@ struct utsname utsname;
 
 static int clifd = -1;
 
+/* HTTP codes */
 static char *http_200 = "HTTP/1.1 200 OK\r\n";
 static char *http_404 = "HTTP/1.1 404 Not Found\r\n";
+
+/* HTTP content types */
+static char *http_content_type_none = "";
+static char *http_content_type_deflate = "Content-Encoding: deflate\r\n";
+
+/* HTTP generic header */
 static char *http_generic = "Server: atop\r\n"
+"%s"	/* for http_content_type_XXX */
 "Content-Type: %s; charset=utf-8\r\n"
 "Content-Length: %d\r\n\r\n";
 
-static char *http_generic_encode = "Server: atop\r\n"
-"Content-Encoding: deflate\r\n"
-"Content-Type: %s; charset=utf-8\r\n"
-"Content-Length: %d\r\n\r\n";
-
+/* HTTP content types */
 static char *http_content_type_html = "text/html";
 static char *http_content_type_css = "text/css";
 static char *http_content_type_javascript = "application/javascript";
@@ -80,7 +84,7 @@ static void http_prepare_response()
 
 }
 
-static void http_response_200(char *buf, size_t len, int encoding, char* content_type)
+static void http_response_200(char *buf, size_t len, char *encoding, char* content_type)
 {
 	struct iovec iovs[3], *iov;
 
@@ -95,10 +99,8 @@ static void http_response_200(char *buf, size_t len, int encoding, char* content
 	iov = &iovs[1];
 	char content[128] = {0};
 	int content_length = 0;
-	if (encoding)
-	    content_length = sprintf(content, http_generic_encode, content_type, len);
-	else
-	    content_length = sprintf(content, http_generic, content_type, len);
+
+	content_length = sprintf(content, http_generic, encoding, content_type, len);
 	iov->iov_base = content;
 	iov->iov_len = content_length;
 
@@ -114,6 +116,12 @@ static void http_response_200(char *buf, size_t len, int encoding, char* content
 
 static void http_show_samp_done(struct output *op)
 {
+	if (op->encoding == http_content_type_none) {
+		http_response_200(op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
+		return;
+	}
+
+	/* compress data for encoding deflate */
 	char *compbuf = malloc(op->ob.offset);
 	unsigned long complen = op->ob.offset;
 
@@ -122,7 +130,7 @@ static void http_show_samp_done(struct output *op)
 		write(clifd, http_404, strlen(http_404));
 	}
 
-	http_response_200(compbuf, complen, 1, http_content_type_html);
+	http_response_200(compbuf, complen, http_content_type_deflate, http_content_type_html);
 	free(compbuf);
 }
 
@@ -173,22 +181,36 @@ static void http_showsamp(char *req)
 {
 	time_t timestamp = 0;
 	char lables[1024];
+	char encoding[16];
 
 	if (http_arg_long(req, "timestamp", &timestamp) < 0) {
 		char *err = "missing timestamp\r\n";
-		http_response_200(err, strlen(err), 0, http_content_type_html);
+		http_response_200(err, strlen(err), defop.encoding, http_content_type_html);
 		return;
 	}
 
 	if (http_arg_str(req, "lables", lables, sizeof(lables)) < 0) {
 		char *err = "missing lables\r\n";
-		http_response_200(err, strlen(err), 0, http_content_type_html);
+		http_response_200(err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
+	}
+
+	defop.encoding = http_content_type_deflate;
+	if (http_arg_str(req, "encoding", encoding, sizeof(encoding)) == 0) {
+		if (!strcmp(encoding, "none")) {
+			defop.encoding = http_content_type_none;
+		} else if (!strcmp(encoding, "deflate")) {
+			defop.encoding = http_content_type_deflate;
+		} else {
+			char *err = "encoding supports none/deflate only\r\n";
+			http_response_200(err, strlen(err), http_content_type_none, http_content_type_html);
+			return;
+		}
 	}
 
 	if (rawlog_get_record(timestamp, lables) < 0) {
 		char *err = "missing sample\r\n";
-		http_response_200(err, strlen(err), 0, http_content_type_html);
+		http_response_200(err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
 	}
 }
@@ -209,7 +231,7 @@ extern char favicon[], favicon_end[];
 
 static void http_favicon()
 {
-	http_response_200(favicon, favicon_end - favicon, 0, http_content_type_html);
+	http_response_200(favicon, favicon_end - favicon, http_content_type_none, http_content_type_html);
 }
 
 /* Build index.html into atop binary */
@@ -218,7 +240,7 @@ extern char http_index_html[], http_index_html_end[];
 
 static void http_index()
 {
-	http_response_200(http_index_html, http_index_html_end - http_index_html, 0, http_content_type_html);
+	http_response_200(http_index_html, http_index_html_end - http_index_html, http_content_type_none, http_content_type_html);
 }
 
 /* Build atop.js into atop binary */
@@ -227,7 +249,7 @@ extern char http_js[], http_js_end[];
 
 static void http_get_js()
 {
-	http_response_200(http_js, http_js_end - http_js, 0, http_content_type_javascript);
+	http_response_200(http_js, http_js_end - http_js, http_content_type_none, http_content_type_javascript);
 }
 
 /* Build atop.css into atop binary */
@@ -236,7 +258,7 @@ extern char http_css[], http_css_end[];
 
 static void http_get_css()
 {
-	http_response_200(http_css, http_css_end - http_css, 0, http_content_type_css);
+	http_response_200(http_css, http_css_end - http_css, http_content_type_none, http_content_type_css);
 }
 
 /* Build template.html into atop binary */
@@ -259,13 +281,13 @@ static void http_get_template(char *req)
 		return;
 
 	if (!strcmp(template_type, "generic")) {
-		http_response_200(generic_html_template, generic_html_template_end - generic_html_template, 0, http_content_type_html);
+		http_response_200(generic_html_template, generic_html_template_end - generic_html_template, http_content_type_none, http_content_type_html);
 	} else if (!strcmp(template_type, "memory")) {
-		http_response_200(memory_html_template, memory_html_template_end - memory_html_template, 0, http_content_type_html);
+		http_response_200(memory_html_template, memory_html_template_end - memory_html_template, http_content_type_none, http_content_type_html);
 	} else if (!strcmp(template_type, "disk")) {
-		http_response_200(disk_html_template, disk_html_template_end - disk_html_template, 0, http_content_type_html);
+		http_response_200(disk_html_template, disk_html_template_end - disk_html_template, http_content_type_none, http_content_type_html);
 	} else if (!strcmp(template_type, "command_line")) {
-		http_response_200(command_line_html_template, command_line_html_template_end - command_line_html_template, 0, http_content_type_html);
+		http_response_200(command_line_html_template, command_line_html_template_end - command_line_html_template, http_content_type_none, http_content_type_html);
 	} else {
 		http_prepare_response();
 		write(clifd, http_404, strlen(http_404));
@@ -276,7 +298,7 @@ static void http_ping()
 {
 	char *pong = "pong\r\n";
 
-	http_response_200(pong, strlen(pong), 0, http_content_type_html);
+	http_response_200(pong, strlen(pong), http_content_type_none, http_content_type_html);
 }
 
 static void http_process_request(char *req)
