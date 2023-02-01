@@ -28,9 +28,18 @@ also possible to query the system level and process level information in
 batch.
 
 ## HOWTO
+### run atop daemon
+* By systemd: `systemctl status atop.service`(test atop service) and `systemctl start atop.service`(start atop service).
+* By command: `atop -w /var/log/atop/atop_20230105 10`.
+
+### run atophttpd daemon:
 ```
  make
  ./atophttpd -d #run in daemon
 ```
 
-then access atophttpd by web browser, for example: `192.168.1.100:2867`
+### access atophttpd server:
+* By a web browser, for example: `192.168.1.100:2867`,
+to get the help page by `192.168.1.100:2867/help`.
+
+* By curl command: `curl 'http://127.0.0.1:2867/showsamp?lables=ALL&timestamp=1675158274&encoding=none' | jq `.

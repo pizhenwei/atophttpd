@@ -225,6 +225,15 @@ static void http_showsamp(char *req)
 	#sym "_end:\n"				\
 	".section \".text\"\n")
 
+/* Build help.html into atop binary */
+IMPORT_BIN(".rodata", "http/help.html", help);
+extern char help[], help_end[];
+
+static void http_help()
+{
+	http_response_200(help, help_end - help, http_content_type_none, http_content_type_html);
+}
+
 /* Build favicon.ico into atop binary */
 IMPORT_BIN(".rodata", "http/favicon.ico", favicon);
 extern char favicon[], favicon_end[];
@@ -319,6 +328,8 @@ static void http_process_request(char *req)
 
 	if (!strcmp(location, "ping"))
 		http_ping();
+	else if (!strcmp(location, "help"))
+		http_help();
 	else if (!strcmp(location, "favicon.ico"))
 		http_favicon();
 	else if (!strcmp(location, "showsamp"))
