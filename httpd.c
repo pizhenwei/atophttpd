@@ -253,12 +253,30 @@ static void http_index()
 }
 
 /* Build atop.js into atop binary */
-IMPORT_BIN(".rodata", "http/js/atop.js", http_js);
-extern char http_js[], http_js_end[];
+IMPORT_BIN(".rodata", "http/js/atop.js", atop_js);
+extern char atop_js[], atop_js_end[];
 
-static void http_get_js()
+static void http_get_atop_js()
 {
-	http_response_200(http_js, http_js_end - http_js, http_content_type_none, http_content_type_javascript);
+	http_response_200(atop_js, atop_js_end - atop_js, http_content_type_none, http_content_type_javascript);
+}
+
+/* Build atop_parse.js into atop binary */
+IMPORT_BIN(".rodata", "http/js/atop_parse.js", atop_parse_js);
+extern char atop_parse_js[], atop_parse_js_end[];
+
+static void http_get_atop_parse_js()
+{
+	http_response_200(atop_parse_js, atop_parse_js_end - atop_parse_js, http_content_type_none, http_content_type_javascript);
+}
+
+/* Build atop_compare_fc.js into atop binary */
+IMPORT_BIN(".rodata", "http/js/atop_compare_fc.js", atop_compare_fc_js);
+extern char atop_compare_fc_js[], atop_compare_fc_js_end[];
+
+static void http_get_atop_compare_fc_js()
+{
+	http_response_200(atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js, http_content_type_none, http_content_type_javascript);
 }
 
 /* Build atop.css into atop binary */
@@ -271,6 +289,9 @@ static void http_get_css()
 }
 
 /* Build template.html into atop binary */
+IMPORT_BIN(".rodata", "http/template/html/header.html", header_html_template);
+extern char header_html_template[], header_html_template_end[];
+
 IMPORT_BIN(".rodata", "http/template/html/generic.html", generic_html_template);
 extern char generic_html_template[], generic_html_template_end[];
 
@@ -282,6 +303,11 @@ extern char disk_html_template[], disk_html_template_end[];
 
 IMPORT_BIN(".rodata", "http/template/html/command_line.html", command_line_html_template);
 extern char command_line_html_template[], command_line_html_template_end[];
+
+static void http_get_template_header()
+{
+	http_response_200(header_html_template, header_html_template_end - header_html_template, http_content_type_none, http_content_type_html);
+}
 
 static void http_get_template(char *req)
 {
@@ -337,9 +363,15 @@ static void http_process_request(char *req)
 	else if (!strcmp(location, "index.html"))
 		http_index();
 	else if (!strcmp(location, "js/atop.js"))
-		http_get_js();
+		http_get_atop_js();
+	else if (!strcmp(location, "js/atop_parse.js"))
+		http_get_atop_parse_js();
+	else if (!strcmp(location, "js/atop_compare_fc.js"))
+		http_get_atop_compare_fc_js();
 	else if (!strcmp(location, "css/atop.css"))
 		http_get_css();
+	else if (!strcmp(location, "template_header"))
+		http_get_template_header();
 	else if (!strcmp(location, "template"))
 		http_get_template(req);
 	else {
