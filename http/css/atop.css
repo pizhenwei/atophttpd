@@ -50,6 +50,7 @@ div.header_entry_value {
     padding-right: 1%;
     white-space: nowrap;
     text-align: right;
+    direction: rtl;
 }
 
 

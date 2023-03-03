@@ -73,6 +73,7 @@ var only_proc = true;
 
 var change_template = false
 var change_data = false
+var filter_str = ""
 var init = true
 
 var delta = 0
@@ -120,7 +121,6 @@ window.onkeydown = function (event) {
             break;
         case 'l':
             atopList();
-            change_template = true
             break;
         case 'g':
             order_type = OrderType.CPU;
@@ -145,6 +145,9 @@ window.onkeydown = function (event) {
         case 'y':
             only_proc = !only_proc;
             change_template = true;
+            break;
+        case '/':
+            filter_str = prompt("Command line string as regular expression (enter=no regex): ", "");
             break;
         default:
             return
@@ -354,7 +357,7 @@ function ParseJsonToHtml(node, raw_json) {
 
 function preprocessJson(json) {
     parseAtopHeader(json);
-    parseAtopProcess(json);
+    parseAtopProcess(json, filter_str);
 }
 
 function repeatAtopHtmlNode(node, arr, percputot) {

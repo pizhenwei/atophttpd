@@ -30,10 +30,11 @@ function parseAtopHeader(json) {
     cpulist = json[0]["cpu"];
     cpulist.sort(compareOrderByCpu);
 
-    if (cpu_show_num > cpulist.length) {
-        cpu_show_num = cpulist.length;
+    var temp_cpu_show_num = cpu_show_num
+    if (temp_cpu_show_num > cpulist.length) {
+        temp_cpu_show_num = cpulist.length;
     }
-    json[0]["cpu"] = cpulist.slice(0, cpu_show_num);
+    json[0]["cpu"] = cpulist.slice(0, temp_cpu_show_num);
 
     //GPU line
     //TODO
@@ -55,27 +56,38 @@ function parseAtopHeader(json) {
     })
 
     numa_cpulist = json[0]["NUC"];
-    if (numa_show_num > numa_cpulist.length) {
-        numa_show_num = numa_cpulist.length;
+    var temp_numa_show_num = numa_show_num
+    if (temp_numa_show_num > numa_cpulist.length) {
+        temp_numa_show_num = numa_cpulist.length;
     }
 
-    json[0]["NUM"] = numa_memlist.slice(0, numa_show_num);
-    json[0]["NUC"] = numa_cpulist.slice(0, numa_show_num);
+    json[0]["NUM"] = numa_memlist.slice(0, temp_numa_show_num);
+    json[0]["NUC"] = numa_cpulist.slice(0, temp_numa_show_num);
 
     //PAG line
 
     //PSI line
     psiEntry = json[0]["PSI"];
-    json[0]["PSI"]["cpusome"] = ((psiEntry["cstot"] / elapsed * 100) > 100) ? 100 : psiEntry["cstot"] / (elapsed * 10000);
-    json[0]["PSI"]["iosome"] = ((psiEntry["iostot"] / elapsed * 100) > 100) ? 100 : psiEntry["iostot"] / (elapsed * 10000);
-    json[0]["PSI"]["iofull"] = ((psiEntry["ioftot"] / elapsed * 100) > 100) ? 100 : psiEntry["ioftot"] / (elapsed * 10000);
-    json[0]["PSI"]["memsome"] = ((psiEntry["mstot"] / elapsed * 100) > 100) ? 100 : psiEntry["mstot"] / (elapsed * 10000);
-    json[0]["PSI"]["memfull"] = ((psiEntry["mftot"] / elapsed * 100) > 100) ? 100 : psiEntry["mftot"] / (elapsed * 10000);
-    json[0]["PSI"]["cs"] = psiEntry["cs10"].toFixed(0) + "/" + psiEntry["cs60"].toFixed(0) + "/" + psiEntry["cs300"].toFixed(0);
-    json[0]["PSI"]["ms"] = psiEntry["ms10"].toFixed(0) + "/" + psiEntry["ms60"].toFixed(0) + "/" + psiEntry["ms300"].toFixed(0);
-    json[0]["PSI"]["mf"] = psiEntry["mf10"].toFixed(0) + "/" + psiEntry["mf60"].toFixed(0) + "/" + psiEntry["mf300"].toFixed(0);
-    json[0]["PSI"]["is"] = psiEntry["ios10"].toFixed(0) + "/" + psiEntry["ios60"].toFixed(0) + "/" + psiEntry["ios300"].toFixed(0);
-    json[0]["PSI"]["if"] = psiEntry["iof10"].toFixed(0) + "/" + psiEntry["iof60"].toFixed(0) + "/" + psiEntry["iof300"].toFixed(0);
+
+    if (function(){
+        for(var i in psiEntry) {
+            return false
+        }
+        return true
+    } === false ) {
+        json[0]["PSI"]["cpusome"] = ((psiEntry["cstot"] / elapsed * 100) > 100) ? 100 : psiEntry["cstot"] / (elapsed * 10000);
+        json[0]["PSI"]["iosome"] = ((psiEntry["iostot"] / elapsed * 100) > 100) ? 100 : psiEntry["iostot"] / (elapsed * 10000);
+        json[0]["PSI"]["iofull"] = ((psiEntry["ioftot"] / elapsed * 100) > 100) ? 100 : psiEntry["ioftot"] / (elapsed * 10000);
+        json[0]["PSI"]["memsome"] = ((psiEntry["mstot"] / elapsed * 100) > 100) ? 100 : psiEntry["mstot"] / (elapsed * 10000);
+        json[0]["PSI"]["memfull"] = ((psiEntry["mftot"] / elapsed * 100) > 100) ? 100 : psiEntry["mftot"] / (elapsed * 10000);
+        json[0]["PSI"]["cs"] = psiEntry["cs10"].toFixed(0) + "/" + psiEntry["cs60"].toFixed(0) + "/" + psiEntry["cs300"].toFixed(0);
+        json[0]["PSI"]["ms"] = psiEntry["ms10"].toFixed(0) + "/" + psiEntry["ms60"].toFixed(0) + "/" + psiEntry["ms300"].toFixed(0);
+        json[0]["PSI"]["mf"] = psiEntry["mf10"].toFixed(0) + "/" + psiEntry["mf60"].toFixed(0) + "/" + psiEntry["mf300"].toFixed(0);
+        json[0]["PSI"]["is"] = psiEntry["ios10"].toFixed(0) + "/" + psiEntry["ios60"].toFixed(0) + "/" + psiEntry["ios300"].toFixed(0);
+        json[0]["PSI"]["if"] = psiEntry["iof10"].toFixed(0) + "/" + psiEntry["iof60"].toFixed(0) + "/" + psiEntry["iof300"].toFixed(0);
+    } else {
+        json[0]["PSI"] = []
+    }
 
     //LVM line
     lvmlist = json[0]["LVM"];
@@ -98,18 +110,20 @@ function parseAtopHeader(json) {
         dsk["MBw/s"] = (dsk["nwsect"] / 2 / 1024 / elapsed).toFixed(1);
     })
     dsklist.sort(compareOrderByDiskIoms);
-    if (disk_show_num > dsklist.length) {
-        disk_show_num = dsklist.length;
+    var temp_disk_show_num = disk_show_num
+    if (temp_disk_show_num > dsklist.length) {
+        temp_disk_show_num = dsklist.length;
     }
-    json[0]["DSK"] = dsklist.slice(0, disk_show_num);
+    json[0]["DSK"] = dsklist.slice(0, temp_disk_show_num);
 
     //NET line
     netlist = json[0]["NET"];
     netlist.sort(compareOrderByNet);
-    if (interface_show_num > netlist.length) {
-        interface_show_num = netlist.length
+    var temp_interface_show_num = interface_show_num
+    if (temp_interface_show_num > netlist.length) {
+        temp_interface_show_num = netlist.length
     }
-    json[0]["NET"] = netlist.slice(0, interface_show_num);
+    json[0]["NET"] = netlist.slice(0, temp_interface_show_num);
 
     //IFB line
     // TODO
@@ -128,7 +142,7 @@ function parseAtopHeader(json) {
     json[0]["EXTRA"] = extra;
 }
 
-function parseAtopProcess(json) {
+function parseAtopProcess(json, filter_str) {
     percputot = json[0]["EXTRA"]["percputot"];
     availmem = json[0]["EXTRA"]["availmem"];
 
@@ -182,14 +196,14 @@ function parseAtopProcess(json) {
         availdisk += nett_wsz;
     })
 
+    // filter str
     aggregate_pr_map = new Map();
-    prcmap.forEach(function (iprc, index) {
-        // proc_count not contains exit proc
-
+    prgmap.forEach(function (iprg, index) {
         iprm = prmmap.get(index);
         iprd = prdmap.get(index);
-        iprg = prgmap.get(index);
+        iprc = prcmap.get(index);
 
+        // proc_count not contains exit proc
         if (iprg["isproc"] !== 1) {
             iprg["tid"] = iprg["tgid"];
             if (only_proc) {
@@ -197,6 +211,14 @@ function parseAtopProcess(json) {
             }
         } else {
             iprg["tid"] = '-';
+        }
+
+        if (typeof filter_str == 'string') {
+            if (filter_str != "") {
+                if (iprg["name"].indexOf(filter_str) == -1) {
+                    return
+                }
+            }
         }
 
         hprc["stime_unit_time"] += iprc["stime"];
@@ -285,11 +307,12 @@ function parseAtopProcess(json) {
             aggregate_pr_arr.sort(compareOrderByCpu);
     }
 
-    if (proc_show_num > aggregate_pr_arr.length) {
-        proc_show_num = aggregate_pr_arr.length;
+    var temp_proc_show_num = proc_show_num
+    if (temp_proc_show_num > aggregate_pr_arr.length) {
+        temp_proc_show_num = aggregate_pr_arr.length;
     }
 
-    json[0]["PRSUMMARY"] = aggregate_pr_arr.slice(0, proc_show_num);
+    json[0]["PRSUMMARY"] = aggregate_pr_arr.slice(0, temp_proc_show_num);
     json[0]["HPRC"] = hprc;
     delete json[0]["PRC"];
     delete json[0]["PRM"];
@@ -383,13 +406,13 @@ function ParseBandwidth(BandwidthValue, indicatorName) {
     var unit = 1000;
 
     if (BandwidthValue < unit) {
-        return BandwidthValue + ' Kbps';
+        return BandwidthValue + "Kbps";
     } else if (BandwidthValue < Math.pow(unit, 2)) {
-        return (BandwidthValue / unit).toFixed(2) + " Mbps";
+        return (BandwidthValue / unit).toFixed(2) + "Mbps";
     } else if (BandwidthValue < Math.pow(unit, 3)) {
-        return (BandwidthValue / Math.pow(unit, 2)).toFixed(2) + " Gbps";
+        return (BandwidthValue / Math.pow(unit, 2)).toFixed(2) + "Gbps";
     } else {
-        return (BandwidthValue / Math.pow(unit, 3)).toFixed(2) + " Tbps";
+        return (BandwidthValue / Math.pow(unit, 3)).toFixed(2) + "Tbps";
     }
 }
 
