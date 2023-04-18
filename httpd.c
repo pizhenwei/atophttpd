@@ -483,21 +483,26 @@ static void *httpd_routine(int listenfd, char  *log_path)
 
 static int httpd(int httpport, char *log_path)
 {
-	struct sockaddr_in listenaddr;
+	struct sockaddr_in6 listenaddr;
 	int listenfd = -1;
+	static const int reuse = 1;
 
 	signal(SIGPIPE, SIG_IGN);
 
-	listenfd = socket(AF_INET, SOCK_STREAM, 0);
-	if (listenfd == -1)
-		return errno;
+	if ((listenfd = socket(AF_INET6, SOCK_STREAM, 0)) < 0){
+			perror("ipv6 socket create error: ");
+			return errno;
+	}else if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse)) < 0){
+			perror("ipv6 socket set REUSEADDR failed: ");
+			return errno;
+	}else if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, (const char*)&reuse, sizeof(reuse)) < 0) {
+			perror("ipv6 socket set REUSEPORT failed: ");
+			return errno;
+	}
 
-	int reuse = 1;
-	setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-	setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, (const char*)&reuse, sizeof(reuse));
-	listenaddr.sin_family = AF_INET;
-	listenaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	listenaddr.sin_port = htons(httpport);
+	listenaddr.sin6_family = AF_INET6;
+	listenaddr.sin6_addr = in6addr_any;
+	listenaddr.sin6_port = htons(httpport);
 	if (bind(listenfd, (struct sockaddr *)&listenaddr, sizeof(listenaddr)))
 		return errno;
 
@@ -547,7 +552,7 @@ int main(int argc, char *argv[])
 {
 	int port = 0, daemonmode = 0;
 	char *log_path = NULL;
-	int args;
+	int args, errno;
 	char ch;
 
 	while ((ch = getopt_long(argc, argv, short_opts, long_opts, &args)) >= 0) {
@@ -591,7 +596,7 @@ int main(int argc, char *argv[])
 		port = default_port;
 
 	log_debug("%s runs with log path(%s), port(%d)\n", argv[0], log_path, port);
-	httpd(port, log_path);
+	errno = httpd(port, log_path);
 
-	return 0;
+	return errno;
 }
