@@ -15,5 +15,6 @@ typedef long long count_t;
 extern unsigned int pagesize;
 extern unsigned short hertz;
 extern struct utsname utsname;
+extern unsigned int hidecmdline;
 
 #endif

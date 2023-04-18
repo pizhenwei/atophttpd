@@ -4,7 +4,7 @@
 - A web style atop(https://www.atoptool.nl)
 .SH SYNOPSIS
 .B atophttpd
-[\-h] [\-d] [\-D] [-p PORT] [-P PATH]
+[\-h] [\-d] [\-D] [\-H] [-p PORT] [-P PATH]
 .SH DESCRIPTION
 .I atophttpd
 depends on atop and reads atop rawlog, provides web
@@ -25,6 +25,9 @@ Run in daemon mode.
 .TP
 \-D
 Run with debug message. (not in daemon mode)
+.TP
+\-H
+Hide cmdline for security protection. (Ex, mysql -pPASSWD)
 .TP
 \-p PORT
 Listen to PORT, default 2867.

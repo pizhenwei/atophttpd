@@ -46,6 +46,7 @@ struct output defop = {
 unsigned int pagesize;
 unsigned short hertz;
 struct utsname utsname;
+int hidecmdline = 0;
 
 #define INBUF_SIZE	4096
 #define URL_LEN		1024
@@ -518,27 +519,29 @@ int __debug = 0;
 static int default_port = 2867;
 static char *default_log_path = "/var/log/atop";
 
-static char *short_opts = "dDhp:P:V";
+static char *short_opts = "dDhHp:P:V";
 static struct option long_opts[] = {
-	{"daemon",	no_argument,		0,	'd'},
-	{"debug",	no_argument,		0,	'D'},
-	{"port",	required_argument,	0,	'p'},
-	{"path",	required_argument,	0,	'P'},
-	{"help",	no_argument,		0,	'h'},
-	{"version",	no_argument,		0,	'V'},
-	{0,		0,			0,	0  }
+	{ "daemon",		no_argument,		0,	'd' },
+	{ "debug",		no_argument,		0,	'D' },
+	{ "port",		required_argument,	0,	'p' },
+	{ "path",		required_argument,	0,	'P' },
+	{ "help",		no_argument,		0,	'h' },
+	{ "hide-cmdline",	no_argument,		0,	'H' },
+	{ "version",		no_argument,		0,	'V' },
+	{ 0,			0,			0,	0   }
 };
 
 static void httpd_showhelp(void)
 {
 	printf("Usage:\n");
-	printf("  -d/--daemon   : run in daemon mode\n");
-	printf("  -D/--debug    : run with debug message\n");
-	printf("  -p/--port PORT: listen to PORT, default %d\n", default_port);
-	printf("  -P/--path PATH: atop log path, default %s\n", default_log_path);
-	printf("  -h/--help     : show help\n\n");
-	printf("  maintained by : zhenwei pi<pizhenwei@bytedance.com> (HTTP backend)\n");
-	printf("                  enhua zhou<zhouenhua@bytedance.com> (HTTP frontend)\n");
+	printf("  -d/--daemon       : run in daemon mode\n");
+	printf("  -D/--debug        : run with debug message\n");
+	printf("  -p/--port PORT    : listen to PORT, default %d\n", default_port);
+	printf("  -P/--path PATH    : atop log path, default %s\n", default_log_path);
+	printf("  -H/--hide-cmdline : hide cmdline for security protection\n");
+	printf("  -h/--help         : show help\n\n");
+	printf("  maintained by     : zhenwei pi<pizhenwei@bytedance.com> (HTTP backend)\n");
+	printf("                      enhua zhou<zhouenhua@bytedance.com> (HTTP frontend)\n");
 	exit(0);
 }
 
@@ -568,6 +571,9 @@ int main(int argc, char *argv[])
 				break;
 			case 'P':
 				log_path = optarg;
+				break;
+			case 'H':
+				hidecmdline = 1;
 				break;
 			case 'V':
 				httpd_showversion();

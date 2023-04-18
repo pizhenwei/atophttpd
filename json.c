@@ -183,6 +183,12 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs,
 		for (int j = 0; (j < sizeof(tmp->gen.name)) && tmp->gen.name[j]; j++)
 			if ((tmp->gen.name[j] == '\"') || (tmp->gen.name[j] == '\\'))
 				tmp->gen.name[j] = '#';
+
+		if (hidecmdline) {
+			strcpy(tmp->gen.cmdline, "***");
+			continue;
+		}
+
 		for (int j = 0; (j < sizeof(tmp->gen.cmdline) && tmp->gen.cmdline[j]); j++)
 			if ((tmp->gen.cmdline[j] == '\"') || (tmp->gen.cmdline[j] == '\\'))
 				tmp->gen.cmdline[j] = '#';
