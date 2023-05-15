@@ -1,7 +1,11 @@
-CFLAGS = -Iatop -g -O2 -lz -Wall -std=gnu11
-OBJS = cache.o httpd.o json.o output.o rawlog.o version.o
+CFLAGS = -Iatop -g -O2 -lz -Wall -Wcast-align -std=gnu11
+OBJS = cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o
 BIN = atophttpd
 PREFIX := $(prefix)
+
+ifneq (,$(filter $(USE_TLS),yes YES y Y 1))
+	CFLAGS += -lssl -lcrypto -DUSE_TLS
+endif
 
 all: submodule bin
 	gcc -o $(BIN) $(OBJS) $(CFLAGS)

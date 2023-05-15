@@ -11,6 +11,8 @@
 #ifndef _OUTPUT_H_
 #define _OUTPUT_H_
 
+#include "connection.h"
+
 enum {
 	OUTPUT_STDOUT,
 	OUTPUT_FD,
@@ -28,11 +30,11 @@ struct output {
 			int offset; /* offset of buf, reset to 0 for next record */
 		} ob; /* OUTPUT_BUF */
 	};
-	void    (*done)(struct output *op);
+	void (*done)(struct output *op, connection *conn);
 	char *encoding;
 };
 
 void output_samp(struct output *op, char *buf, int size);
-void output_samp_done(struct output *op);
+void output_samp_done(struct output *op, connection *conn);
 
 #endif

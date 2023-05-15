@@ -14,17 +14,15 @@
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <netdb.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <sys/uio.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -36,12 +34,33 @@
 
 #include "version.h"
 
-static void http_show_samp_done(struct output *op);
+#define DEFAULT_PORT		2867
+#define DEFAULT_TLS_PORT	2868
+#define DEFAULT_LOG_PATH	"/var/log/atop"
+
+#define DEFAULT_CERT_FILE	"/etc/pki/atophttpd/server.crt"
+#define DEFAULT_KEY_FILE	"/etc/pki/atophttpd/server.key"
+#define DEFAULT_CA_FILE		"/etc/pki/CA/ca.crt"
+
+static void http_show_samp_done(struct output *op, connection *conn);
 
 struct output defop = {
 	.output_type = OUTPUT_BUF,
 	.done = http_show_samp_done
 };
+
+static struct atophttd_context config = {
+	.port = DEFAULT_PORT,
+	.log_path = DEFAULT_LOG_PATH,
+	.addr = "127.0.0.1",
+
+	.tls_ctx_config.tls_port = -1,
+	.tls_ctx_config.tls_addr = "::*",
+	.tls_ctx_config.ca_cert_file = DEFAULT_CA_FILE,
+	.tls_ctx_config.cert_file = DEFAULT_CERT_FILE,
+	.tls_ctx_config.key_file = DEFAULT_KEY_FILE,
+};
+
 
 unsigned int pagesize;
 unsigned short hertz;
@@ -50,9 +69,6 @@ int hidecmdline = 0;
 
 #define INBUF_SIZE	4096
 #define URL_LEN		1024
-
-static int clifd = -1;
-
 /* HTTP codes */
 static char *http_200 = "HTTP/1.1 200 OK\r\n";
 static char *http_404 = "HTTP/1.1 404 Not Found\r\n";
@@ -72,24 +88,24 @@ static char *http_content_type_html = "text/html";
 static char *http_content_type_css = "text/css";
 static char *http_content_type_javascript = "application/javascript";
 
-static void http_prepare_response()
+static void http_prepare_response(connection *conn)
 {
 	/* try to send response data in a timeout */
 	int onoff = 1;
-	setsockopt(clifd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
+	setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
 
-	fcntl(clifd, F_SETFL, fcntl(clifd, F_GETFL) & ~O_NONBLOCK);
+	fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) & ~O_NONBLOCK);
 
 	struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-	setsockopt(clifd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+	setsockopt(conn->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
 }
 
-static void http_response_200(char *buf, size_t len, char *encoding, char* content_type)
+static void http_response_200(connection *conn, char *buf, size_t len, char *encoding, char* content_type)
 {
 	struct iovec iovs[3], *iov;
 
-	http_prepare_response();
+	http_prepare_response(conn);
 
 	/* 1, http code */
 	iov = &iovs[0];
@@ -110,15 +126,14 @@ static void http_response_200(char *buf, size_t len, char *encoding, char* conte
 	iov->iov_base = buf;
 	iov->iov_len = len;
 
-	writev(clifd, iovs, sizeof(iovs) / sizeof(iovs[0]));
-
-	close(clifd);
+	conn_writev(conn, iovs, sizeof(iovs) / sizeof(iovs[0]));
+	conn_close(conn);
 }
 
-static void http_show_samp_done(struct output *op)
+static void http_show_samp_done(struct output *op, connection *conn)
 {
 	if (op->encoding == http_content_type_none) {
-		http_response_200(op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
+		http_response_200(conn, op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
 		return;
 	}
 
@@ -127,11 +142,11 @@ static void http_show_samp_done(struct output *op)
 	unsigned long complen = op->ob.offset;
 
 	if (compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK){
-		http_prepare_response();
-		write(clifd, http_404, strlen(http_404));
+		http_prepare_response(conn);
+		conn_write(conn, http_404, strlen(http_404));
 	}
 
-	http_response_200(compbuf, complen, http_content_type_deflate, http_content_type_html);
+	http_response_200(conn, compbuf, complen, http_content_type_deflate, http_content_type_html);
 	free(compbuf);
 }
 
@@ -178,7 +193,7 @@ static int http_arg_str(char *req, char *needle, char *p, int len)
         return 0;
 }
 
-static void http_showsamp(char *req)
+static void http_showsamp(char *req, connection *conn)
 {
 	time_t timestamp = 0;
 	char lables[1024];
@@ -186,13 +201,13 @@ static void http_showsamp(char *req)
 
 	if (http_arg_long(req, "timestamp", &timestamp) < 0) {
 		char *err = "missing timestamp\r\n";
-		http_response_200(err, strlen(err), defop.encoding, http_content_type_html);
+		http_response_200(conn, err, strlen(err), defop.encoding, http_content_type_html);
 		return;
 	}
 
 	if (http_arg_str(req, "lables", lables, sizeof(lables)) < 0) {
 		char *err = "missing lables\r\n";
-		http_response_200(err, strlen(err), http_content_type_none, http_content_type_html);
+		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
 	}
 
@@ -204,14 +219,14 @@ static void http_showsamp(char *req)
 			defop.encoding = http_content_type_deflate;
 		} else {
 			char *err = "encoding supports none/deflate only\r\n";
-			http_response_200(err, strlen(err), http_content_type_none, http_content_type_html);
+			http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
 			return;
 		}
 	}
 
-	if (rawlog_get_record(timestamp, lables) < 0) {
+	if (rawlog_get_record(timestamp, lables, conn) < 0) {
 		char *err = "missing sample\r\n";
-		http_response_200(err, strlen(err), http_content_type_none, http_content_type_html);
+		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
 	}
 }
@@ -230,63 +245,63 @@ static void http_showsamp(char *req)
 IMPORT_BIN(".rodata", "http/help.html", help);
 extern char help[], help_end[];
 
-static void http_help()
+static void http_help(connection *conn)
 {
-	http_response_200(help, help_end - help, http_content_type_none, http_content_type_html);
+	http_response_200(conn, help, help_end - help, http_content_type_none, http_content_type_html);
 }
 
 /* Build favicon.ico into atop binary */
 IMPORT_BIN(".rodata", "http/favicon.ico", favicon);
 extern char favicon[], favicon_end[];
 
-static void http_favicon()
+static void http_favicon(connection *conn)
 {
-	http_response_200(favicon, favicon_end - favicon, http_content_type_none, http_content_type_html);
+	http_response_200(conn, favicon, favicon_end - favicon, http_content_type_none, http_content_type_html);
 }
 
 /* Build index.html into atop binary */
 IMPORT_BIN(".rodata", "http/index.html", http_index_html);
 extern char http_index_html[], http_index_html_end[];
 
-static void http_index()
+static void http_index(connection *conn)
 {
-	http_response_200(http_index_html, http_index_html_end - http_index_html, http_content_type_none, http_content_type_html);
+	http_response_200(conn, http_index_html, http_index_html_end - http_index_html, http_content_type_none, http_content_type_html);
 }
 
 /* Build atop.js into atop binary */
 IMPORT_BIN(".rodata", "http/js/atop.js", atop_js);
 extern char atop_js[], atop_js_end[];
 
-static void http_get_atop_js()
+static void http_get_atop_js(connection *conn)
 {
-	http_response_200(atop_js, atop_js_end - atop_js, http_content_type_none, http_content_type_javascript);
+	http_response_200(conn, atop_js, atop_js_end - atop_js, http_content_type_none, http_content_type_javascript);
 }
 
 /* Build atop_parse.js into atop binary */
 IMPORT_BIN(".rodata", "http/js/atop_parse.js", atop_parse_js);
 extern char atop_parse_js[], atop_parse_js_end[];
 
-static void http_get_atop_parse_js()
+static void http_get_atop_parse_js(connection *conn)
 {
-	http_response_200(atop_parse_js, atop_parse_js_end - atop_parse_js, http_content_type_none, http_content_type_javascript);
+	http_response_200(conn, atop_parse_js, atop_parse_js_end - atop_parse_js, http_content_type_none, http_content_type_javascript);
 }
 
 /* Build atop_compare_fc.js into atop binary */
 IMPORT_BIN(".rodata", "http/js/atop_compare_fc.js", atop_compare_fc_js);
 extern char atop_compare_fc_js[], atop_compare_fc_js_end[];
 
-static void http_get_atop_compare_fc_js()
+static void http_get_atop_compare_fc_js(connection *conn)
 {
-	http_response_200(atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js, http_content_type_none, http_content_type_javascript);
+	http_response_200(conn, atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js, http_content_type_none, http_content_type_javascript);
 }
 
 /* Build atop.css into atop binary */
 IMPORT_BIN(".rodata", "http/css/atop.css", http_css);
 extern char http_css[], http_css_end[];
 
-static void http_get_css()
+static void http_get_css(connection *conn)
 {
-	http_response_200(http_css, http_css_end - http_css, http_content_type_none, http_content_type_css);
+	http_response_200(conn, http_css, http_css_end - http_css, http_content_type_none, http_content_type_css);
 }
 
 /* Build template.html into atop binary */
@@ -305,39 +320,39 @@ extern char disk_html_template[], disk_html_template_end[];
 IMPORT_BIN(".rodata", "http/template/html/command_line.html", command_line_html_template);
 extern char command_line_html_template[], command_line_html_template_end[];
 
-static void http_get_template_header()
+static void http_get_template_header(connection *conn)
 {
-	http_response_200(header_html_template, header_html_template_end - header_html_template, http_content_type_none, http_content_type_html);
+	http_response_200(conn, header_html_template, header_html_template_end - header_html_template, http_content_type_none, http_content_type_html);
 }
 
-static void http_get_template(char *req)
+static void http_get_template(char *req, connection *conn)
 {
 	char template_type[256];
 	if (http_arg_str(req, "type", template_type, sizeof(template_type)) < 0)
 		return;
 
 	if (!strcmp(template_type, "generic")) {
-		http_response_200(generic_html_template, generic_html_template_end - generic_html_template, http_content_type_none, http_content_type_html);
+		http_response_200(conn, generic_html_template, generic_html_template_end - generic_html_template, http_content_type_none, http_content_type_html);
 	} else if (!strcmp(template_type, "memory")) {
-		http_response_200(memory_html_template, memory_html_template_end - memory_html_template, http_content_type_none, http_content_type_html);
+		http_response_200(conn, memory_html_template, memory_html_template_end - memory_html_template, http_content_type_none, http_content_type_html);
 	} else if (!strcmp(template_type, "disk")) {
-		http_response_200(disk_html_template, disk_html_template_end - disk_html_template, http_content_type_none, http_content_type_html);
+		http_response_200(conn, disk_html_template, disk_html_template_end - disk_html_template, http_content_type_none, http_content_type_html);
 	} else if (!strcmp(template_type, "command_line")) {
-		http_response_200(command_line_html_template, command_line_html_template_end - command_line_html_template, http_content_type_none, http_content_type_html);
+		http_response_200(conn, command_line_html_template, command_line_html_template_end - command_line_html_template, http_content_type_none, http_content_type_html);
 	} else {
-		http_prepare_response();
-		write(clifd, http_404, strlen(http_404));
+		http_prepare_response(conn);
+		conn_write(conn, http_404, strlen(http_404));
 	}
 }
 
-static void http_ping()
+static void http_ping(connection *conn)
 {
 	char *pong = "pong\r\n";
 
-	http_response_200(pong, strlen(pong), http_content_type_none, http_content_type_html);
+	http_response_200(conn, pong, strlen(pong), http_content_type_none, http_content_type_html);
 }
 
-static void http_process_request(char *req)
+static void http_process_request(char *req, connection *conn)
 {
 	char location[URL_LEN] = {0};
 	char *c;
@@ -349,35 +364,35 @@ static void http_process_request(char *req)
 		memcpy(location, req, strlen(req));
 
 	if (strlen(location) == 0) {
-		http_index();
+		http_index(conn);
 		return;
 	}
 
 	if (!strcmp(location, "ping"))
-		http_ping();
+		http_ping(conn);
 	else if (!strcmp(location, "help"))
-		http_help();
+		http_help(conn);
 	else if (!strcmp(location, "favicon.ico"))
-		http_favicon();
+		http_favicon(conn);
 	else if (!strcmp(location, "showsamp"))
-		http_showsamp(req);
+		http_showsamp(req, conn);
 	else if (!strcmp(location, "index.html"))
-		http_index();
+		http_index(conn);
 	else if (!strcmp(location, "js/atop.js"))
-		http_get_atop_js();
+		http_get_atop_js(conn);
 	else if (!strcmp(location, "js/atop_parse.js"))
-		http_get_atop_parse_js();
+		http_get_atop_parse_js(conn);
 	else if (!strcmp(location, "js/atop_compare_fc.js"))
-		http_get_atop_compare_fc_js();
+		http_get_atop_compare_fc_js(conn);
 	else if (!strcmp(location, "css/atop.css"))
-		http_get_css();
+		http_get_css(conn);
 	else if (!strcmp(location, "template_header"))
-		http_get_template_header();
+		http_get_template_header(conn);
 	else if (!strcmp(location, "template"))
-		http_get_template(req);
+		http_get_template(req, conn);
 	else {
-		http_prepare_response();
-		write(clifd, http_404, strlen(http_404));
+		http_prepare_response(conn);
+		conn_write(conn, http_404, strlen(http_404));
 	}
 }
 
@@ -390,28 +405,28 @@ static time_t httpd_now_ms()
 	return now.tv_sec * 1000 + now.tv_usec / 1000;
 }
 
-static void httpd_handle_request()
-{
+static void httpd_handle_request(connection *conn) {
 	char inbuf[INBUF_SIZE] = {0};
 	int inbytes = 0;
 	char httpreq[URL_LEN] = {0};
 	time_t timeout = httpd_now_ms() + 100;
 
-	fcntl(clifd, F_SETFL, fcntl(clifd, F_GETFL) | O_NONBLOCK);
+	fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
 
 	for ( ; ; ) {
 		time_t now = httpd_now_ms();
 		if (now >= timeout)
 			goto closefd;
 
-		struct pollfd pfd = {.fd = clifd, .events = POLLIN, .revents = 0};
+		struct pollfd pfd = {.fd = conn->fd, .events = POLLIN, .revents = 0};
 		poll(&pfd, 1, timeout - now);
 
-		int ret = read(clifd, inbuf + inbytes, sizeof(inbuf) - inbytes);
+		int ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - inbytes);
 		if (ret < 0)
 		{
-			if (errno != EAGAIN)
+			if (ret != -EAGAIN) {
 				goto closefd;
+			}
 			continue;
 		}
 
@@ -438,10 +453,11 @@ static void httpd_handle_request()
 		goto closefd;
 
 	memcpy(httpreq, inbuf + 5, httpver - inbuf - 6);
-	http_process_request(httpreq);
+	http_process_request(httpreq, conn);
 
 closefd:
-	close(clifd);
+	conn_close(conn);
+	return;
 }
 
 static void httpd_update_cache(char *log_path)
@@ -459,22 +475,71 @@ static void httpd_update_cache(char *log_path)
 	update = now;
 }
 
-static void *httpd_routine(int listenfd, char  *log_path)
+static void *httpd_routine(connection **listeners, char *log_path)
 {
-	struct sockaddr_in cliaddr;
-	socklen_t addrlen = sizeof(cliaddr);
-	struct pollfd pfd = { .fd = listenfd, .events = POLLIN, .revents = 0 };
-	int ret;
+	int epollfd;
+	int ret = 0;
+	int nr_listener = 0;
+	connection *listener, *conn;
+	struct epoll_event event;
 
-	while (1) {
-		ret = poll(&pfd, 1, 1000);
-		if (ret > 0) {
-			clifd = accept(listenfd, (struct sockaddr *)&cliaddr, &addrlen);
-			if (clifd < 0)
-				continue;
+	epollfd = epoll_create1(0);
+	if (epollfd < 0) {
+		printf("Failed create epollfd\n");
+		exit(1);
+	}
 
-			httpd_handle_request(clifd);
+	for (int i = 0; i < CONN_TYPE_MAX; i++) {
+		listener = listeners[i];
+		if (listener == NULL) {
+			continue;
 		}
+
+		ret = conn_listen(listener);
+		if (ret < 0) {
+			printf("ConnectionType %s failed listening on port %u, aborting.\n", listener->type->get_type(NULL), listener->port);
+			exit(1);
+		}
+
+		event.events = EPOLLIN;
+		event.data.ptr = listener;
+		if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listener->fd, &event)) {
+			printf("Add listener into epoll failed\n");
+			exit(1);
+		}
+		nr_listener++;
+	}
+
+	if (nr_listener == 0) {
+		printf("Listen Nothing, Exit.\n");
+		exit(1);
+	}
+
+	printf("Ready to serve\n");
+	while (1) {
+		ret = epoll_wait(epollfd, &event, 1, 1000);
+		if (!ret) {
+			continue;
+		}
+
+		if (ret < 0) {
+			if (errno == EINTR) {
+				continue;
+			} else {
+				printf("Error in epoll_wait %m\n");
+				exit(1);
+			}
+		}
+
+		listener = event.data.ptr;
+		conn = conn_create(listener->type, -1, NULL);
+		ret = conn_accept(listener, conn);
+		if (ret < 0) {
+			conn_close(conn);
+			continue;
+		}
+
+		httpd_handle_request(conn);
 
 		httpd_update_cache(log_path);
 	}
@@ -482,49 +547,56 @@ static void *httpd_routine(int listenfd, char  *log_path)
 	return NULL;
 }
 
-static int httpd(int httpport, char *log_path)
+static int httpd(struct atophttd_context ctx)
 {
-	struct sockaddr_in6 listenaddr;
-	int listenfd = -1;
-	static const int reuse = 1;
-
 	signal(SIGPIPE, SIG_IGN);
+	connection *listener;
+	int conn_index, ret;
 
-	if ((listenfd = socket(AF_INET6, SOCK_STREAM, 0)) < 0){
-			perror("ipv6 socket create error: ");
-			return errno;
-	}else if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse)) < 0){
-			perror("ipv6 socket set REUSEADDR failed: ");
-			return errno;
-	}else if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEPORT, (const char*)&reuse, sizeof(reuse)) < 0) {
-			perror("ipv6 socket set REUSEPORT failed: ");
-			return errno;
+	if (ctx.port > 0) {
+		conn_index = get_conntype_index_by_name(CONN_TYPE_SOCKET);
+		if (conn_index < 0) {
+			printf("Failed finding connectin listener of %s\n", CONN_TYPE_SOCKET);
+			exit(1);
+		}
+		listener = conn_create(get_conntype_by_name(CONN_TYPE_SOCKET), ctx.port, ctx.addr);
+		ctx.listeners[conn_index] = listener;
 	}
 
-	listenaddr.sin6_family = AF_INET6;
-	listenaddr.sin6_addr = in6addr_any;
-	listenaddr.sin6_port = htons(httpport);
-	if (bind(listenfd, (struct sockaddr *)&listenaddr, sizeof(listenaddr)))
-		return errno;
+	if (ctx.tls_ctx_config.tls_port > 0) {
+		conn_index = get_conntype_index_by_name(CONN_TYPE_TLS);
+		if (conn_index < 0) {
+			exit(1);
+		}
+		listener = conn_create(get_conntype_by_name(CONN_TYPE_TLS), ctx.tls_ctx_config.tls_port, ctx.tls_ctx_config.tls_addr);
 
-	if (listen(listenfd, 128))
-		return errno;
+		ret = conn_configure(get_conntype_by_name(CONN_TYPE_TLS), &ctx.tls_ctx_config, 1);
+		if (ret < 0) {
+			printf("Failed to configure TLS\n");
+			exit(1);
+		}
 
-	httpd_routine(listenfd, log_path);
+		ctx.listeners[conn_index] = listener;
+	}
 
+	httpd_routine(ctx.listeners, ctx.log_path);
 	return 0;
 }
 
 int __debug = 0;
-static int default_port = 2867;
-static char *default_log_path = "/var/log/atop";
+static char *short_opts = "dDhHp:a:P:t::A:C:c:k:V";
 
-static char *short_opts = "dDhHp:P:V";
 static struct option long_opts[] = {
 	{ "daemon",		no_argument,		0,	'd' },
 	{ "debug",		no_argument,		0,	'D' },
 	{ "port",		required_argument,	0,	'p' },
+	{ "addr",		required_argument,	0,	'a' },
 	{ "path",		required_argument,	0,	'P' },
+	{ "tls-port",		optional_argument,	0,	't'},
+	{ "tls-addr",		required_argument,	0,	'A'},
+	{ "ca-cert-file",	required_argument,	0,	'C' },
+	{ "cert-file",		required_argument,	0,	'c' },
+	{ "key-file",		required_argument,	0,	'k' },
 	{ "help",		no_argument,		0,	'h' },
 	{ "hide-cmdline",	no_argument,		0,	'H' },
 	{ "version",		no_argument,		0,	'V' },
@@ -534,14 +606,20 @@ static struct option long_opts[] = {
 static void httpd_showhelp(void)
 {
 	printf("Usage:\n");
-	printf("  -d/--daemon       : run in daemon mode\n");
-	printf("  -D/--debug        : run with debug message\n");
-	printf("  -p/--port PORT    : listen to PORT, default %d\n", default_port);
-	printf("  -P/--path PATH    : atop log path, default %s\n", default_log_path);
-	printf("  -H/--hide-cmdline : hide cmdline for security protection\n");
-	printf("  -h/--help         : show help\n\n");
-	printf("  maintained by     : zhenwei pi<pizhenwei@bytedance.com> (HTTP backend)\n");
-	printf("                      enhua zhou<zhouenhua@bytedance.com> (HTTP frontend)\n");
+	printf("  -d/--daemon         \n    run in daemon mode\n");
+	printf("  -D/--debug          \n    run with debug message\n");
+	printf("  -p/--port PORT      \n    listen to PORT, default %d\n", DEFAULT_PORT);
+	printf("  -a/--addr ADDR      \n    bind to ADDR, default bind local host\n");
+	printf("  -P/--path PATH      \n    atop log path, default %s\n", DEFAULT_LOG_PATH);
+	printf("  -t/--tls-port PORT  \n    listen to TLS PORT, default %d\n", DEFAULT_TLS_PORT);
+	printf("  -A/--tls-addr ADDR  \n    bind to TLS ADDR, default bind * (all addresses)\n");
+	printf("  -C/--ca-cert-file PATH\n    Path to the server TLS trusted CA cert file, default %s\n", DEFAULT_CA_FILE);
+	printf("  -c/--cert-file PATH \n    Path to the server TLS cert file, default %s\n", DEFAULT_CERT_FILE);
+	printf("  -k/--key-file PATH  \n    Path to the server TLS key file, default %s\n", DEFAULT_KEY_FILE);
+	printf("  -H/--hide-cmdline   \n    hide cmdline for security protection\n");
+	printf("  -h/--help           \n    show help\n\n");
+	printf("  maintained by       \n    zhenwei pi<pizhenwei@bytedance.com> (HTTP backend)\n");
+	printf("                            enhua zhou<zhouenhua@bytedance.com> (HTTP frontend)\n");
 	exit(0);
 }
 
@@ -553,8 +631,7 @@ static void httpd_showversion(void)
 
 int main(int argc, char *argv[])
 {
-	int port = 0, daemonmode = 0;
-	char *log_path = NULL;
+	int daemonmode = 0;
 	int args, errno;
 	char ch;
 
@@ -567,10 +644,31 @@ int main(int argc, char *argv[])
 				__debug = 1;
 				break;
 			case 'p':
-				port = atoi(optarg);
+				config.port = atoi(optarg);
+				break;
+			case 'a':
+				config.addr = optarg;
 				break;
 			case 'P':
-				log_path = optarg;
+				config.log_path = optarg;
+				break;
+			case 't':
+				if (optarg)
+					config.tls_ctx_config.tls_port = atoi(optarg);
+				else
+					config.tls_ctx_config.tls_port = DEFAULT_TLS_PORT;
+				break;
+			case 'A':
+				config.tls_ctx_config.tls_addr = optarg;
+				break;
+			case 'C':
+				config.tls_ctx_config.ca_cert_file = optarg;
+				break;
+			case 'c':
+				config.tls_ctx_config.cert_file = optarg;
+				break;
+			case 'k':
+				config.tls_ctx_config.key_file = optarg;
 				break;
 			case 'H':
 				hidecmdline = 1;
@@ -590,19 +688,16 @@ int main(int argc, char *argv[])
 	hertz = sysconf(_SC_CLK_TCK);
 	uname(&utsname);
 
-	if (!log_path)
-		log_path = default_log_path;
-
-	if (rawlog_parse_all(log_path)) {
+	if (rawlog_parse_all(config.log_path)) {
 		printf("%s: rawlog parse failed\n", __func__);
 		return -1;
 	}
 
-	if (!port)
-		port = default_port;
+	log_debug("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
 
-	log_debug("%s runs with log path(%s), port(%d)\n", argv[0], log_path, port);
-	errno = httpd(port, log_path);
+	printf("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
+	conntype_initialize();
+	errno = httpd(config);
 
 	return errno;
 }

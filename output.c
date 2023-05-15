@@ -59,10 +59,10 @@ void output_samp(struct output *op, char *buf, int size)
 	}
 }
 
-void output_samp_done(struct output *op)
+void output_samp_done(struct output *op, connection *conn)
 {
 	if (op->done)
-		op->done(op);
+		op->done(op, conn);
 
 	if (op->output_type == OUTPUT_BUF)
 	{

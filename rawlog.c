@@ -332,7 +332,7 @@ static int rawlog_record_flags(int hflags, int rflags)
 	return ret;
 }
 
-int rawlog_get_record(time_t ts, char *labels)
+int rawlog_get_record(time_t ts, char *labels, connection *conn)
 {
 	struct rawrecord rr;
 	struct sstat sstat;
@@ -390,7 +390,7 @@ found:
 	}
 
 	int flags = rawlog_record_flags(cache->flags, rr.flags);
-	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, &sstat, rr.nexit, rr.noverflow, 0);
+	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, &sstat, rr.nexit, rr.noverflow, 0, conn);
 
 	rawlog_free_devtstat(&devtstat);
 

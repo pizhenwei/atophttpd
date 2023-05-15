@@ -35,7 +35,8 @@ batch.
 ### run atophttpd daemon:
 ```
  make
- ./atophttpd -d #run in daemon
+ ./atophttpd -d #run in daemon only on localhost
+ ./atophttpd -d -a ${IP} #run in daemon on ip
 ```
 
 ### access atophttpd server:
@@ -43,3 +44,28 @@ batch.
 to get the help page by `192.168.1.100:2867/help`.
 
 * By curl command: `curl 'http://127.0.0.1:2867/showsamp?lables=ALL&timestamp=1675158274&encoding=none' | jq `.
+
+### Generate TLS certification:
+```
+ bash gen-cert.sh
+```
+   * CertFile will be generated under `tls/`
+
+### run atophttpd daemon with TLS:
+```
+ make USE_TLS=YES
+ /atophttpd -t 2868 -C tls/ca.crt -c tls/server.crt -k tls/server.key
+```
+
+Or use default TLS config:
+
+* CA cert file default use `/etc/pki/CA/ca.crt`
+* Server cert file default use `/etc/pki/atophttpd/server.crt`
+* Server key file default use `/etc/pki/atophttpd/server.key`
+
+### access atophttpd server with TLS:
+* By curl command:
+```
+curl --cacert tls/ca.crt --cert tls/client.crt --key tls/client.key 'https://127.0.0.1:2868/showsamp?lables=ALL&timestamp=1684402523&encoding=none'
+```
+

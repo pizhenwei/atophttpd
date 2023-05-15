@@ -123,7 +123,7 @@ static int jsondef(char *pd, struct labeldef *labeldef, int numlabels)
 
 int jsonout(int flags, char *pd, time_t curtime, int numsecs,
          struct devtstat *devtstat, struct sstat *sstat,
-         int nexit, unsigned int noverflow, char flag)
+         int nexit, unsigned int noverflow, char flag, connection *conn)
 {
 	char header[256], general[256];
 	struct tstat *tmp = devtstat->taskall;
@@ -163,7 +163,7 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs,
 
 	ret = jsondef(pd, labeldef, numlabels);
 	if (ret) {
-		output_samp_done(&defop);
+		output_samp_done(&defop, conn);
 		return ret;
 	}
 
@@ -206,7 +206,7 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs,
 	}
 
 	output_samp(&defop, "}\n", 2);
-	output_samp_done(&defop);
+	output_samp_done(&defop, conn);
 
 	return 0;
 }

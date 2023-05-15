@@ -14,7 +14,8 @@
 
 #include "photosyst.h"
 #include "photoproc.h"
+#include "connection.h"
 
-int jsonout(int, char *, time_t, int, struct devtstat *, struct sstat *, int, unsigned int, char);
+int jsonout(int, char *, time_t, int, struct devtstat *, struct sstat *, int, unsigned int, char, connection* connection);
 
 #endif
