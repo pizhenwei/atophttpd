@@ -51,6 +51,7 @@ struct output defop = {
 
 static struct atophttd_context config = {
 	.port = DEFAULT_PORT,
+        .daemonmode = 0,
 	.log_path = DEFAULT_LOG_PATH,
 	.addr = "127.0.0.1",
 
@@ -579,6 +580,9 @@ static int httpd(struct atophttd_context ctx)
 		ctx.listeners[conn_index] = listener;
 	}
 
+        if (ctx.daemonmode)
+                daemon(0, 0);
+
 	httpd_routine(ctx.listeners, ctx.log_path);
 	return 0;
 }
@@ -631,14 +635,13 @@ static void httpd_showversion(void)
 
 int main(int argc, char *argv[])
 {
-	int daemonmode = 0;
 	int args, errno;
 	char ch;
 
 	while ((ch = getopt_long(argc, argv, short_opts, long_opts, &args)) >= 0) {
 		switch (ch) {
 			case 'd':
-				daemonmode = 1;
+				config.daemonmode = 1;
 				break;
 			case 'D':
 				__debug = 1;
@@ -680,9 +683,6 @@ int main(int argc, char *argv[])
 				httpd_showhelp();
 		}
 	}
-
-	if (daemonmode)
-		daemon(0, 0);
 
 	pagesize = sysconf(_SC_PAGESIZE);
 	hertz = sysconf(_SC_CLK_TCK);

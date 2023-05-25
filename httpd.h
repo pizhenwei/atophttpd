@@ -34,6 +34,7 @@ typedef struct atophttpd_tls_context_config {
 
 struct atophttd_context {
 	int port;
+        int daemonmode;
 	char *addr;
 	char *log_path;
 
