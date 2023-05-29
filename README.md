@@ -69,3 +69,5 @@ Or use default TLS config:
 curl --cacert tls/ca.crt --cert tls/client.crt --key tls/client.key 'https://127.0.0.1:2868/showsamp?lables=ALL&timestamp=1684402523&encoding=none'
 ```
 
+## Limitation
+Currently, atophttpd supports atop v2.8 only.
