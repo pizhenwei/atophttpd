@@ -56,6 +56,7 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 {
 	struct cache_elem_t *elem = &cache->elems[cache->nr_elems - 1];
 	struct rawrecord rr;
+	int ret = 0;
 
 	int fd = open(cache->name, O_RDONLY);
 	if (fd < 0) {
@@ -82,14 +83,19 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 		cache->nr_elems, cache->elems[0].time, cache->elems[cache->nr_elems - 1].time);
 
 	struct stat statbuf;
-	fstat(fd, &statbuf);
+	ret = fstat(fd, &statbuf);
+	if (ret < 0) {
+		printf("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
+		ret = -errno;
+		goto close_fd;
+	}
+
 	cache->st_size = statbuf.st_size;
 	cache->st_mtim = statbuf.st_mtim;
 
 close_fd:
 	close(fd);
-
-	return 0;
+	return ret;
 }
 
 static int rawlog_parse_one(const char *path)
@@ -106,7 +112,12 @@ static int rawlog_parse_one(const char *path)
 	/* if we have already build a cache, rebuild it */
 	cache = cache_find(path);
 	if (cache) {
-		stat(path, &statbuf);
+		ret = stat(path, &statbuf);
+		if (ret < 0) {
+			printf("%s: stat \"%s\" failed: %m\n", __func__, path);
+			return -errno;
+		}
+
 		if (cache->st_size == statbuf.st_size) {
 			return 0;
 		}
@@ -144,6 +155,11 @@ static int rawlog_parse_one(const char *path)
 
 	/* 3, read all rawrecords, cache time&off mapping */
 	off = lseek(fd, 0, SEEK_CUR);
+	if (off < 0) {
+		printf("%s: move offset failed\n", __func__);
+		ret = -errno;
+		goto close_fd;
+	}
 	while (1) {
 		len = pread(fd, &rr, sizeof(rr), off);
 		if (len < sizeof(rr))
@@ -154,7 +170,12 @@ static int rawlog_parse_one(const char *path)
 	}
 
 	/* 4, update rawlog size & st_mtim */
-	fstat(fd, &statbuf);
+	ret = fstat(fd, &statbuf);
+	if (ret < 0) {
+		printf("%s: fstat \"%s\" failed", __func__, path);
+		ret = -errno;
+		goto close_fd;
+	}
 	cache->st_size = statbuf.st_size;
 	cache->st_mtim = statbuf.st_mtim;
 
@@ -201,7 +222,7 @@ int rawlog_parse_all(const char *path)
 	return 0;
 }
 
-static int rawlog_uncompress_record(int fd, void *outbuf, unsigned long *outlen, long inlen)
+static int rawlog_uncompress_record(int fd, void *outbuf, unsigned long *outlen, unsigned long inlen)
 {
 	Byte *inbuf;
 	int ret = 0;
@@ -224,7 +245,7 @@ free_buf:
 	return ret;
 }
 
-static int rawlog_get_sstat(int fd, struct sstat *sstat, long len)
+static int rawlog_get_sstat(int fd, struct sstat *sstat, unsigned long len)
 {
 	unsigned long outlen = sizeof(struct sstat);
 
@@ -242,6 +263,7 @@ static int rawlog_get_devtstat(int fd, struct devtstat *devtstat, struct rawreco
 {
 	unsigned long outlen = sizeof(struct tstat) * rr->ndeviat;
 	int ret;
+	unsigned long ntaskall = 0, nprocall = 0, nprocactive = 0, ntaskactive = 0;
 
 	/* 1, allocate memory */
 	memset(devtstat, 0x00, sizeof(struct devtstat));
@@ -258,7 +280,7 @@ static int rawlog_get_devtstat(int fd, struct devtstat *devtstat, struct rawreco
 	}
 
 	devtstat->procactive = malloc(sizeof(struct tstat*) * rr->nactproc);
-	if (!devtstat->procall) {
+	if (!devtstat->procactive) {
 		ret = -ENOMEM;
 		goto free_devtstat;
 	}
@@ -269,7 +291,6 @@ static int rawlog_get_devtstat(int fd, struct devtstat *devtstat, struct rawreco
 		goto free_devtstat;
 
 	/* 3, build devtstat */
-	unsigned long ntaskall = 0, nprocall = 0, nprocactive = 0, ntaskactive = 0;
 	for ( ; ntaskall < rr->ndeviat; ntaskall++)
 	{
 		struct tstat *tstat = devtstat->taskall + ntaskall;
@@ -335,12 +356,20 @@ static int rawlog_record_flags(int hflags, int rflags)
 int rawlog_get_record(time_t ts, char *labels, connection *conn)
 {
 	struct rawrecord rr;
-	struct sstat sstat;
+	struct sstat *sstat;
 	struct devtstat devtstat;
 	ssize_t len;
 	int fd;
-	int ret;
+	int ret = 0;
+	int flags;
 	off_t off;
+	time_t recent_ts;
+
+	sstat = malloc(sizeof(struct sstat));
+	if (sstat == NULL) {
+		log_debug("can't alloc mem for sstat\n");
+		return -ENOMEM;
+	}
 
 	struct cache_t *cache = cache_get(ts, &off);
 	if (cache)
@@ -349,12 +378,16 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn)
 	log_debug("no record @%ld\n", ts);
 
 	cache = cache_get_recent();
-	if (!cache)
-		return -EIO;
+	if (!cache) {
+		ret = -EIO;
+		goto free_sstat;
+	}
 
-	time_t recent_ts = cache->elems[cache->nr_elems - 1].time;
-	if (ts < recent_ts)
-		return -EIO;
+	recent_ts = cache->elems[cache->nr_elems - 1].time;
+	if (ts < recent_ts) {
+		ret = -EIO;
+		goto free_sstat;
+	}
 
 	off = cache->elems[cache->nr_elems - 1].off;
 	log_debug("use recent @%ld from %s\n", cache->elems[cache->nr_elems - 1].time, cache->name);
@@ -365,10 +398,17 @@ found:
 	fd = open(cache->name, O_RDONLY);
 	if (fd < 0) {
 		printf("%s: open \"%s\" failed: %m\n", __func__, cache->name);
-		return -errno;
+		ret = -errno;
+		goto free_sstat;
 	}
 
-	lseek(fd, off, SEEK_CUR);
+	ret = lseek(fd, off, SEEK_CUR);
+	if (ret < 0) {
+		printf("%s: move offset failed\n", __func__);
+		ret = -errno;
+		goto close_fd;
+	}
+
 	len = read(fd, &rr, sizeof(rr));
 	if (len != sizeof(rr)) {
 		printf("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, cache->name);
@@ -377,7 +417,7 @@ found:
 	}
 	log_debug("time %ld, off %ld in %s, rr.curtime %ld\n", ts, off, cache->name, rr.curtime);
 
-	ret = rawlog_get_sstat(fd, &sstat, rr.scomplen);
+	ret = rawlog_get_sstat(fd, sstat, rr.scomplen);
 	if (ret) {
 		printf("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, cache->name);
 		goto close_fd;
@@ -389,13 +429,15 @@ found:
 		goto close_fd;
 	}
 
-	int flags = rawlog_record_flags(cache->flags, rr.flags);
-	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, &sstat, rr.nexit, rr.noverflow, 0, conn);
+	flags = rawlog_record_flags(cache->flags, rr.flags);
+	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, sstat, rr.nexit, rr.noverflow, 0, conn);
 
 	rawlog_free_devtstat(&devtstat);
 
 close_fd:
 	close(fd);
+free_sstat:
+	free(sstat);
 
 	return ret;
 }

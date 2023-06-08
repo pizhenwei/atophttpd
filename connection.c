@@ -45,13 +45,16 @@ int conntype_register(connection_type* ct) {
 		}
 	}
 
-	printf("Connection type %s registered\n", typename);
+	if (type == CONN_TYPE_MAX)
+		return -ENOMEM;
+
 	conn_types[type] = ct;
 
 	if (ct->init) {
 		ct->init();
 	}
 
+	printf("Connection type %s registered\n", typename);
 	return -errno;
 }
 
@@ -134,6 +137,7 @@ int listen_to_port(int port, char* bindaddr, int af) {
 		if (ret == -1) {
 			perror("socket bind failed: ");
 			close(sockfd);
+			sockfd = -1;
 			continue;
 		}
 
@@ -141,6 +145,7 @@ int listen_to_port(int port, char* bindaddr, int af) {
 		if (ret == -1) {
 			perror("socket listen failed: ");
 			close(sockfd);
+			sockfd = -1;
 			continue;
 		}
 
@@ -148,9 +153,11 @@ int listen_to_port(int port, char* bindaddr, int af) {
 	}
 
 error:
-	if (sockfd != -1)
+	if (sockfd != -1) {
 		close(sockfd);
-	sockfd = -1;
+		sockfd = -1;
+	}
+
 end:
 	freeaddrinfo(res);
 	return sockfd;

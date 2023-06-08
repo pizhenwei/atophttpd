@@ -89,24 +89,44 @@ static char *http_content_type_html = "text/html";
 static char *http_content_type_css = "text/css";
 static char *http_content_type_javascript = "application/javascript";
 
-static void http_prepare_response(connection *conn)
+static int http_prepare_response(connection *conn)
 {
 	/* try to send response data in a timeout */
 	int onoff = 1;
-	setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
+	int ret;
+	ret = setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
+	if (ret) {
+		printf("failed to set socket to TCP_NODELAY\n");
+		return ret;
+	}
 
-	fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) & ~O_NONBLOCK);
+	ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) & ~O_NONBLOCK);
+	if (ret) {
+		printf("failed to set conn to blocking\n");
+		return ret;
+	}
 
 	struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-	setsockopt(conn->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+	ret = setsockopt(conn->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+	if (ret) {
+		printf("failed to set socket to SNDTIMEO\n");
+		return ret;
+	}
 
+	return 0;
 }
 
 static void http_response_200(connection *conn, char *buf, size_t len, char *encoding, char* content_type)
 {
 	struct iovec iovs[3], *iov;
+	int ret;
+	char content[128] = {0};
+	int content_length = 0;
 
-	http_prepare_response(conn);
+	ret = http_prepare_response(conn);
+	if (ret) {
+		goto closeconn;
+	}
 
 	/* 1, http code */
 	iov = &iovs[0];
@@ -115,8 +135,6 @@ static void http_response_200(connection *conn, char *buf, size_t len, char *enc
 
 	/* 2, http generic content */
 	iov = &iovs[1];
-	char content[128] = {0};
-	int content_length = 0;
 
 	content_length = sprintf(content, http_generic, encoding, content_type, len);
 	iov->iov_base = content;
@@ -128,6 +146,8 @@ static void http_response_200(connection *conn, char *buf, size_t len, char *enc
 	iov->iov_len = len;
 
 	conn_writev(conn, iovs, sizeof(iovs) / sizeof(iovs[0]));
+
+closeconn:
 	conn_close(conn);
 }
 
@@ -358,6 +378,12 @@ static void http_process_request(char *req, connection *conn)
 	char location[URL_LEN] = {0};
 	char *c;
 
+	if (strlen(req) > URL_LEN) {
+		http_prepare_response(conn);
+		conn_write(conn, http_404, strlen(http_404));
+		return;
+	}
+
 	c = strchr(req, '?');
 	if (c)
 		memcpy(location, req, c - req);
@@ -411,22 +437,35 @@ static void httpd_handle_request(connection *conn) {
 	int inbytes = 0;
 	char httpreq[URL_LEN] = {0};
 	time_t timeout = httpd_now_ms() + 100;
+	int ret;
+	char *httpver;
 
-	fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
+	ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
+	if (ret) {
+		printf("failed to set conn to non_blocking");
+		goto close_fd;
+	}
 
 	for ( ; ; ) {
 		time_t now = httpd_now_ms();
 		if (now >= timeout)
-			goto closefd;
+			goto close_fd;
 
 		struct pollfd pfd = {.fd = conn->fd, .events = POLLIN, .revents = 0};
-		poll(&pfd, 1, timeout - now);
+		ret = poll(&pfd, 1, timeout - now);
+		if (ret <= 0)
+		{
+			if (ret != 0) {
+				goto close_fd;
+			}
+			continue;
+		}
 
-		int ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - inbytes);
+		ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - inbytes);
 		if (ret < 0)
 		{
 			if (ret != -EAGAIN) {
-				goto closefd;
+				goto close_fd;
 			}
 			continue;
 		}
@@ -435,28 +474,28 @@ static void httpd_handle_request(connection *conn) {
 		if ((inbytes >= 4) && strstr(inbuf, "\r\n\r\n"))
 			break;
 
-		/* buf is full, but we can not search the ent of HTTP header */
+		/* buf is full, but we can not search the end of HTTP header */
 		if (inbytes == sizeof(inbuf))
-			goto closefd;
+			goto close_fd;
 	}
 
 	/* support GET request only */
 	if (strncmp("GET ", inbuf, 4))
-		goto closefd;
+		goto close_fd;
 
 	/* support HTTP 1.1 request only */
-	char *httpver = strstr(inbuf, "HTTP/1.1");
+	httpver = strstr(inbuf, "HTTP/1.1");
 	if (!httpver)
-		goto closefd;
+		goto close_fd;
 
 	/* Ex, GET /hello HTTP/1.1 */
 	if ((httpver - inbuf > URL_LEN + 6) || (httpver - inbuf < 6))
-		goto closefd;
+		goto close_fd;
 
 	memcpy(httpreq, inbuf + 5, httpver - inbuf - 6);
 	http_process_request(httpreq, conn);
 
-closefd:
+close_fd:
 	conn_close(conn);
 	return;
 }
@@ -481,7 +520,7 @@ static void *httpd_routine(connection **listeners, char *log_path)
 	int epollfd;
 	int ret = 0;
 	int nr_listener = 0;
-	connection *listener, *conn;
+	connection *listener;
 	struct epoll_event event;
 
 	epollfd = epoll_create1(0);
@@ -533,16 +572,18 @@ static void *httpd_routine(connection **listeners, char *log_path)
 		}
 
 		listener = event.data.ptr;
+		connection *conn;
 		conn = conn_create(listener->type, -1, NULL);
 		ret = conn_accept(listener, conn);
 		if (ret < 0) {
 			conn_close(conn);
+			free(conn);
 			continue;
 		}
 
 		httpd_handle_request(conn);
-
 		httpd_update_cache(log_path);
+		free(conn);
 	}
 
 	return NULL;
@@ -687,6 +728,11 @@ int main(int argc, char *argv[])
 	pagesize = sysconf(_SC_PAGESIZE);
 	hertz = sysconf(_SC_CLK_TCK);
 	uname(&utsname);
+
+	if (config.log_path == NULL) {
+		printf("%s: log path is nil\n", __func__);
+		return -1;
+	}
 
 	if (rawlog_parse_all(config.log_path)) {
 		printf("%s: rawlog parse failed\n", __func__);
