@@ -21,7 +21,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <time.h>
-#include <pwd.h>
 #include <limits.h>
 
 #include "config.h"

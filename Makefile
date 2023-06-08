@@ -2,13 +2,14 @@ CFLAGS = -Iatop -g -O2 -lz -Wall -Wcast-align -std=gnu11
 OBJS = cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o
 BIN = atophttpd
 PREFIX := $(prefix)
+CC=gcc
 
 ifneq (,$(filter $(USE_TLS),yes YES y Y 1))
 	CFLAGS += -lssl -lcrypto -DUSE_TLS
 endif
 
 all: submodule bin
-	gcc -o $(BIN) $(OBJS) $(CFLAGS)
+	$(CC) -o $(BIN) $(OBJS) $(CFLAGS)
 
 install: bin
 	install -D -s $(BIN) $(PREFIX)/usr/bin/$(BIN)
@@ -19,7 +20,7 @@ deb: bin
 	@sh packaging/debian/makedeb.sh `pwd`
 
 bin: $(OBJS)
-	gcc -o $(BIN) $(OBJS) $(CFLAGS)
+	$(CC) -o $(BIN) $(OBJS) $(CFLAGS)
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) $*.c -o $*.o
