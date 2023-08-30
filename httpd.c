@@ -677,10 +677,16 @@ static void httpd_showversion(void)
 int main(int argc, char *argv[])
 {
 	int args, errno;
-	char ch;
+	int ch;
 
-	while ((ch = getopt_long(argc, argv, short_opts, long_opts, &args)) >= 0) {
+	while (1) {
+		ch = getopt_long(argc, argv, short_opts, long_opts, &args);
+		if (ch == -1) {
+			break;
+		}
 		switch (ch) {
+			case 0:
+				break;
 			case 'd':
 				config.daemonmode = 1;
 				break;
