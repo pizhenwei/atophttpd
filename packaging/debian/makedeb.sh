@@ -7,7 +7,7 @@ make -C $ROOT_PATH install prefix=$PACKAGE_PATH
 
 cp $ROOT_PATH/packaging/debian/control $CONTROL_PATH
 # replace version info
-ATOP_VERSION=`cat atop/version.h | tr "\"" " " | awk '{print $3}'`
+ATOP_VERSION=`grep ATOPVERS atop/version.h | tr "\"" " " | awk '{print $3}'`
 sed -i "s/ATOP_VERSION/$ATOP_VERSION/" $CONTROL_PATH/control
 
 # replace package size info
