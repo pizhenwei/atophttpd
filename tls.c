@@ -208,9 +208,14 @@ static int conn_writev_tls(connection* conn, const struct iovec* iov, int iovcnt
 		iov_bytes_len += iov[i].iov_len;
 	}
 
-	char ssl_buf[iov_bytes_len];
+	char *ssl_buf;
+	ssl_buf = malloc(iov_bytes_len);
+	if (!ssl_buf) {
+		perror("SSL have no mem");
+		return -ENOMEM;
+	}
 	size_t offset = 0;
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < iovcnt; i++) {
 		memcpy(ssl_buf + offset, iov[i].iov_base, iov[i].iov_len);
 		offset += iov[i].iov_len;
 	}
