@@ -223,10 +223,11 @@ static int conn_writev_tls(connection* conn, const struct iovec* iov, int iovcnt
 	int ret = SSL_write(tls_conn->ssl, ssl_buf, iov_bytes_len);
 	if (ret < 0) {
 		perror("SSL writev error");
-		return -errno;
+		ret = -errno;
 	}
 
-	return 0;
+	free(ssl_buf);
+	return ret;
 }
 
 static int conn_read_tls(connection* conn, void* buf, size_t buf_len) {
