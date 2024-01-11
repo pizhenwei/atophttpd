@@ -222,7 +222,7 @@ static void http_showsamp(char *req, connection *conn)
 
 	if (http_arg_long(req, "timestamp", &timestamp) < 0) {
 		char *err = "missing timestamp\r\n";
-		http_response_200(conn, err, strlen(err), defop.encoding, http_content_type_html);
+		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
 	}
 
