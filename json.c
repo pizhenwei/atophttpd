@@ -49,7 +49,6 @@ static void json_print_NET();
 static void json_print_IFB();
 static void json_print_NUM();
 static void json_print_NUC();
-static void json_print_LLC();
 static void json_print_PRG();
 static void json_print_PRC();
 static void json_print_PRM();
@@ -148,7 +147,6 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs,
 		{ "IFB",	0,	json_print_IFB },
 		{ "NUM",	0,	json_print_NUM },
 		{ "NUC",	0,	json_print_NUC },
-		{ "LLC",	0,	json_print_LLC },
 
 		{ "PRG",	0,	json_print_PRG },
 		{ "PRC",	0,	json_print_PRC },
@@ -434,12 +432,9 @@ static void json_print_MEM(int flags, char *hp, struct sstat *ss, struct tstat *
 		"\"shmem\": %lld, "
 		"\"shmrss\": %lld, "
 		"\"shmswp\": %lld, "
-		"\"pagetables\": %lld, "
 		"\"hugepagesz\": %lld, "
 		"\"tothugepage\": %lld, "
-		"\"freehugepage\": %lld, "
-		"\"tcpsk\": %lld, "
-		"\"udpsk\": %lld}",
+		"\"freehugepage\": %lld}",
 		hp,
 		ss->mem.physmem * pagesize,
 		ss->mem.freemem * pagesize,
@@ -452,12 +447,9 @@ static void json_print_MEM(int flags, char *hp, struct sstat *ss, struct tstat *
 		ss->mem.shmem * pagesize,
 		ss->mem.shmrss * pagesize,
 		ss->mem.shmswp * pagesize,
-		ss->mem.pagetables * pagesize,
 		ss->mem.hugepagesz,
 		ss->mem.tothugepage,
-		ss->mem.freehugepage,
-		ss->mem.tcpsock * pagesize,
-		ss->mem.udpsock * pagesize);
+		ss->mem.freehugepage);
 
 	output_samp(&defop, buf, buflen);
 }
@@ -496,8 +488,6 @@ static void json_print_PAG(int flags, char *hp, struct sstat *ss, struct tstat *
 		"\"pgscans\": %lld, "
 		"\"pgsteal\": %lld,"
 		"\"allocstall\": %lld, "
-		"\"pgins\": %lld, "
-		"\"pgouts\": %lld, "
 		"\"swins\": %lld, "
 		"\"swouts\": %lld, "
 		"\"oomkills\": %lld}",
@@ -509,8 +499,6 @@ static void json_print_PAG(int flags, char *hp, struct sstat *ss, struct tstat *
 		ss->mem.pgscans,
 		ss->mem.pgsteal,
 		ss->mem.allocstall,
-		ss->mem.pgins,
-		ss->mem.pgouts,
 		ss->mem.swins,
 		ss->mem.swouts,
 		ss->mem.oomkills);
@@ -584,8 +572,7 @@ static void json_print_LVM(int flags, char *hp, struct sstat *ss, struct tstat *
 			"\"nrsect\": %lld, "
 			"\"nwrite\": %lld, "
 			"\"nwsect\": %lld, "
-			"\"avque\": %lld, "
-			"\"inflight\": %lld}",
+			"\"avque\": %lld}",
 			ss->dsk.lvm[i].name,
 			ss->dsk.lvm[i].io_ms,
 			ss->dsk.lvm[i].nread,
@@ -593,8 +580,7 @@ static void json_print_LVM(int flags, char *hp, struct sstat *ss, struct tstat *
 			ss->dsk.lvm[i].nrsect,
 			ss->dsk.lvm[i].nwrite,
 			ss->dsk.lvm[i].nwsect,
-			ss->dsk.lvm[i].avque,
-			ss->dsk.lvm[i].inflight);
+			ss->dsk.lvm[i].avque);
 		output_samp(&defop, buf, buflen);
 	}
 
@@ -621,16 +607,14 @@ static void json_print_MDD(int flags, char *hp, struct sstat *ss, struct tstat *
 			"\"nrsect\": %lld, "
 			"\"nwrite\": %lld, "
 			"\"nwsect\": %lld, "
-			"\"avque\": %lld, "
-			"\"inflight\": %lld}",
+			"\"avque\": %lld}",
 			ss->dsk.mdd[i].name,
 			ss->dsk.mdd[i].io_ms,
 			ss->dsk.mdd[i].nread,
 			ss->dsk.mdd[i].nrsect,
 			ss->dsk.mdd[i].nwrite,
 			ss->dsk.mdd[i].nwsect,
-			ss->dsk.mdd[i].avque,
-			ss->dsk.mdd[i].inflight);
+			ss->dsk.mdd[i].avque);
 		output_samp(&defop, buf, buflen);
 	}
 
@@ -658,8 +642,7 @@ static void json_print_DSK(int flags, char *hp, struct sstat *ss, struct tstat *
 			"\"ndiscrd\": %lld, "
 			"\"nwrite\": %lld, "
 			"\"nwsect\": %lld, "
-			"\"avque\": %lld, "
-			"\"inflight\": %lld}",
+			"\"avque\": %lld}",
 			ss->dsk.dsk[i].name,
 			ss->dsk.dsk[i].io_ms,
 			ss->dsk.dsk[i].nread,
@@ -667,8 +650,7 @@ static void json_print_DSK(int flags, char *hp, struct sstat *ss, struct tstat *
 			ss->dsk.dsk[i].ndisc,
 			ss->dsk.dsk[i].nwrite,
 			ss->dsk.dsk[i].nwsect,
-			ss->dsk.dsk[i].avque,
-			ss->dsk.dsk[i].inflight);
+			ss->dsk.dsk[i].avque);
 		output_samp(&defop, buf, buflen);
 	}
 
@@ -958,8 +940,7 @@ static void json_print_NUC(int flags, char *hp, struct sstat *ss, struct tstat *
 		if (i > 0) {
 			output_samp(&defop, ", ", 2);
 		}
-		buflen = snprintf(buf, sizeof(buf), "{\"numanr\": \"%d\", "
-				"\"nrcpu\": %lld, "
+		buflen = snprintf(buf, sizeof(buf), "{\"nrcpu\": \"%lld\", "
 				"\"stime\": %lld, "
 				"\"utime\": %lld, "
 				"\"ntime\": %lld, "
@@ -969,7 +950,6 @@ static void json_print_NUC(int flags, char *hp, struct sstat *ss, struct tstat *
 				"\"Stime\": %lld, "
 				"\"steal\": %lld, "
 				"\"guest\": %lld}",
-				ss->cpunuma.numa[i].numanr,
 				ss->cpunuma.numa[i].nrcpu,
 				ss->cpunuma.numa[i].stime,
 				ss->cpunuma.numa[i].utime,
@@ -980,34 +960,6 @@ static void json_print_NUC(int flags, char *hp, struct sstat *ss, struct tstat *
 				ss->cpunuma.numa[i].Stime,
 				ss->cpunuma.numa[i].steal,
 				ss->cpunuma.numa[i].guest);
-		output_samp(&defop, buf, buflen);
-	}
-
-	output_samp(&defop, "]", 1);
-}
-
-static void json_print_LLC(int flags, char *hp, struct sstat *ss, struct tstat *ps, int nact)
-{
-	int i;
-	int buflen = 0;
-	char buf[LINE_BUF_SIZE];
-
-        char br[LEN_HP_SIZE];
-        buflen = sprintf(br, ", %s: [", hp);
-        output_samp(&defop, br, buflen);
-
-	for (i = 0; i < ss->llc.nrllcs; i++) {
-		if (i > 0) {
-			output_samp(&defop, ", ", 2);
-		}
-		buflen = snprintf(buf, sizeof(buf), "{\"LLC\": \"%3d\", "
-			"\"occupancy\": \"%3.1f\", "
-			"\"mbm_total\": \"%lld\", "
-			"\"mbm_local\": %lld}",
-			ss->llc.perllc[i].id,
-			ss->llc.perllc[i].occupancy * 100,
-			ss->llc.perllc[i].mbm_total,
-			ss->llc.perllc[i].mbm_local);
 		output_samp(&defop, buf, buflen);
 	}
 
@@ -1129,7 +1081,6 @@ static void json_print_PRC(int flags, char *hp, struct sstat *ss, struct tstat *
 			"\"tgid\": %d, "
 			"\"isproc\": %d, "
 			"\"rundelay\": %lld, "
-			"\"blkdelay\": %lld, "
 			"\"sleepavg\": %d}",
 			ps->gen.pid,
 			ps->cpu.utime,
@@ -1140,7 +1091,6 @@ static void json_print_PRC(int flags, char *hp, struct sstat *ss, struct tstat *
 			ps->gen.tgid,
 			!!ps->gen.isproc,
 			ps->cpu.rundelay/1000000,
-			ps->cpu.blkdelay*1000/hertz,
 			ps->cpu.sleepavg);
 		output_samp(&defop, buf, buflen);
 	}
