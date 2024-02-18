@@ -74,7 +74,7 @@ function parseAtopHeader(json) {
             return false
         }
         return true
-    } === false ) {
+    } == false ) {
         json[0]["PSI"]["cpusome"] = ((psiEntry["cstot"] / elapsed * 100) > 100) ? 100 : psiEntry["cstot"] / (elapsed * 10000);
         json[0]["PSI"]["iosome"] = ((psiEntry["iostot"] / elapsed * 100) > 100) ? 100 : psiEntry["iostot"] / (elapsed * 10000);
         json[0]["PSI"]["iofull"] = ((psiEntry["ioftot"] / elapsed * 100) > 100) ? 100 : psiEntry["ioftot"] / (elapsed * 10000);

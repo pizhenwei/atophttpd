@@ -341,9 +341,6 @@ static int rawlog_record_flags(int hflags, int rflags)
 	if (rflags & RRNETATOPD)
 		ret |= NETATOPD;
 
-	if (rflags & RRCGRSTAT)
-		ret |= CGROUPV2;
-
 	if (rflags & RRDOCKSTAT)
 		ret |= DOCKSTAT;
 
