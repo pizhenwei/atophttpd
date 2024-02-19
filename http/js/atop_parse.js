@@ -118,20 +118,24 @@ function parseAtopHeader(json) {
 
     //NET line
     netlist = json[0]["NET"];
-    netlist.sort(compareOrderByNet);
-    var temp_interface_show_num = interface_show_num
-    if (temp_interface_show_num > netlist.length) {
-        temp_interface_show_num = netlist.length
+    if (netlist !== undefined){
+        netlist.sort(compareOrderByNet);
+        var temp_interface_show_num = interface_show_num
+        if (temp_interface_show_num > netlist.length) {
+            temp_interface_show_num = netlist.length
+        }
+        json[0]["NET"] = netlist.slice(0, temp_interface_show_num);
     }
-    json[0]["NET"] = netlist.slice(0, temp_interface_show_num);
 
     //IFB line
     // TODO
 
     // LLC line
     llclist = json[0]["LLC"];
-    llclist.sort(compareOrderLLC);
-    json[0]["LLC"] = llclist.slice(0, LLC_show_num)
+    if (llclist !== undefined){
+        llclist.sort(compareOrderLLC);
+        json[0]["LLC"] = llclist.slice(0, LLC_show_num)
+    }
 
     // EXTRA
     extra = new Object();
