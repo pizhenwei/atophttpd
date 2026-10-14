@@ -69,14 +69,14 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 	if (len < sizeof(rr))
 		goto close_fd;
 
-	off = off + sizeof(rr) + rr.scomplen + rr.pcomplen;
+	off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	while (1) {
 		len = pread(fd, &rr, sizeof(rr), off);
 		if (len < sizeof(rr))
 			break;
 
 		cache_set(cache, rr.curtime, off);
-		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen;
+		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	}
 
 	log_debug("\"%s\" has %d records of time[%ld - %ld]\n", cache->name,
@@ -166,7 +166,7 @@ static int rawlog_parse_one(const char *path)
 			break;
 
 		cache_set(cache, rr.curtime, off);
-		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen;
+		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	}
 
 	/* 4, update rawlog size & st_mtim */
@@ -344,8 +344,8 @@ static int rawlog_record_flags(int hflags, int rflags)
 	if (rflags & RRCGRSTAT)
 		ret |= CGROUPV2;
 
-	if (rflags & RRDOCKSTAT)
-		ret |= DOCKSTAT;
+	if (rflags & RRCONTAINERSTAT)
+		ret |= CONTAINERSTAT;
 
 	if (rflags & RRGPUSTAT)
 		ret |= GPUSTAT;

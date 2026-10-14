@@ -10,6 +10,7 @@
 set -euo pipefail
 
 THRESHOLD="${1:-90}"
+ATOP_VERSION="${ATOP_VERSION:-v2.11.1}"
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -28,6 +29,8 @@ rm -rf coverage coverage.info
 
 echo ">> ensuring submodule + generated headers"
 git submodule update --init --recursive >/dev/null 2>&1 || true
+git -C atop fetch --tags --quiet >/dev/null 2>&1 || true
+git -C atop checkout --quiet "$ATOP_VERSION" >/dev/null 2>&1 || true
 make -C atop versdate.h >/dev/null 2>&1 || true
 
 echo ">> building atop (used to generate a raw-log for integration tests)"

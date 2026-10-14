@@ -74,7 +74,7 @@ static struct sstat *make_sstat(int cpu0_has_freq)
 	/* CPL / MEM / SWP / PAG just read scalar fields - give them something. */
 	ss->cpu.lavg1 = 0.5;
 	ss->mem.physmem = 1000;
-	ss->mem.hugepagesz = 2048 * 1024;
+	ss->mem.shugepagesz = 2048 * 1024;
 
 	/* GPU */
 	ss->gpu.nrgpus = 2;
@@ -157,7 +157,7 @@ static struct devtstat make_devtstat(void)
 	strcpy(tasks[0].gen.cmdline, "cmd \"arg\" \\path");
 	tasks[0].gen.excode = (int)0x80000000 | 0x80 | 0x05; /* N, core, signal */
 	tasks[0].gen.state = 'R';
-	strcpy(tasks[0].gen.container, "abc123");
+	strcpy(tasks[0].gen.utsname, "abc123");
 	tasks[0].mem.pmem = (unsigned long long)-1LL;        /* -> 0 in PRM */
 	tasks[0].gpu.state = 'A';                             /* active GPU use */
 	tasks[0].gpu.nrgpus = 1;

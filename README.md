@@ -34,10 +34,24 @@ batch.
 
 ### run atophttpd daemon:
 ```
- make
+ make                      # builds against atop v2.11.1 by default
  ./atophttpd -d #run in daemon only on localhost
  ./atophttpd -d -a ${IP} #run in daemon on ip
 ```
+
+**Match the atop version.** atophttpd reads atop's *version-specific* binary
+raw-log format, so it must be compiled against the same atop release that runs
+on the host. The build targets atop **v2.11.1** by default (Debian trixie).
+Other releases of the same generation (the cgroup-v2 raw-log format, roughly
+atop 2.9–2.11) can be selected via `ATOP_VERSION`:
+```
+ make                        # atop v2.11.1 (default, CI-tested)
+ make ATOP_VERSION=v2.10.0   # another 2.9-2.11 tag of the submodule
+```
+Older generations (e.g. atop 2.8 on Debian bookworm) use a different struct
+and record layout; retargeting to them requires minor source changes in
+`json.c`/`rawlog.c`, so use an atophttpd revision built for that generation
+instead.
 
 ### access atophttpd server:
 * By a web browser, for example: `192.168.1.100:2867`,
@@ -54,7 +68,7 @@ to get the help page by `192.168.1.100:2867/help`.
 ### run atophttpd daemon with TLS:
 ```
  make USE_TLS=YES
- /atophttpd -t 2868 -C tls/ca.crt -c tls/server.crt -k tls/server.key
+ ./atophttpd -t 2868 -C tls/ca.crt -c tls/server.crt -k tls/server.key
 ```
 
 Or use default TLS config:
@@ -69,5 +83,14 @@ Or use default TLS config:
 curl --cacert tls/ca.crt --cert tls/client.crt --key tls/client.key 'https://127.0.0.1:2868/showsamp?lables=ALL&timestamp=1684402523&encoding=none'
 ```
 
-## Limitation
-Currently, atophttpd supports atop v2.8 only.
+## Limitations
+atophttpd is compiled against **one** atop release at a time (default
+`v2.11.1`) and reads only raw-logs produced by that same release; it does not
+parse logs from a different atop version. Re-build with the matching
+`ATOP_VERSION` for your host, or convert old logs with atop's own
+`atopconvert` tool.
+
+Building the atop submodule (used to generate sample raw-logs for the
+integration tests) requires `pkg-config` and the glib-2.0 development headers
+(`libglib2.0-dev` on Debian/Ubuntu, `glib2-devel` on RHEL/Fedora). atophttpd
+itself does not depend on glib.

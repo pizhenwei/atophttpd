@@ -25,7 +25,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev libssl-dev
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev libssl-dev \
+                                  pkg-config libglib2.0-dev
 
       - name: Build atophttpd
         run: make USE_TLS=${{ matrix.use_tls }}
@@ -48,7 +49,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
-                                  lcov python3
+                                  pkg-config libglib2.0-dev lcov python3
 
       - name: Build atophttpd (clean build check)
         run: make

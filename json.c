@@ -453,9 +453,9 @@ static void json_print_MEM(int flags, char *hp, struct sstat *ss, struct tstat *
 		ss->mem.shmrss * pagesize,
 		ss->mem.shmswp * pagesize,
 		ss->mem.pagetables * pagesize,
-		ss->mem.hugepagesz,
-		ss->mem.tothugepage,
-		ss->mem.freehugepage,
+		ss->mem.shugepagesz,
+		ss->mem.stothugepage,
+		ss->mem.sfreehugepage,
 		ss->mem.tcpsock * pagesize,
 		ss->mem.udpsock * pagesize);
 
@@ -937,7 +937,7 @@ static void json_print_NUM(int flags, char *hp, struct sstat *ss, struct tstat *
 			ss->memnuma.numa[i].slabmem * pagesize,
 			ss->memnuma.numa[i].slabreclaim * pagesize,
 			ss->memnuma.numa[i].shmem * pagesize,
-			ss->memnuma.numa[i].tothp * ss->mem.hugepagesz);
+			ss->memnuma.numa[i].tothp * ss->mem.shugepagesz);
 		output_samp(&defop, buf, buflen);
 	}
 
@@ -1097,7 +1097,7 @@ static void json_print_PRG(int flags, char *hp, struct sstat *ss, struct tstat *
 			ps->gen.egid,
 			ps->gen.elaps,
 			!!ps->gen.isproc, /* convert to boolean */
-			ps->gen.container[0] ? ps->gen.container:"-");
+			ps->gen.utsname[0] ? ps->gen.utsname:"-");
 		output_samp(&defop, buf, buflen);
 	}
 
