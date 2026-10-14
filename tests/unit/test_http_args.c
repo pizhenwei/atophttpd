@@ -42,6 +42,15 @@ static void test_arg_long_no_equals(void)
 	CHECK_EQ_INT(http_arg_long(mkreq("timestampX=5"), "timestamp", &v), -1);
 }
 
+/* Regression: a parameter name must not match inside a longer token
+ * (e.g. "timestamp" must not match the tail of "xtimestamp"). */
+static void test_arg_long_boundary(void)
+{
+	long v = 0;
+	CHECK_EQ_INT(http_arg_long(mkreq("xtimestamp=5&timestamp=10"), "timestamp", &v), 0);
+	CHECK_EQ_INT(v, 10);
+}
+
 static void test_arg_str_basic(void)
 {
 	char buf[64] = {0};
@@ -66,6 +75,15 @@ static void test_arg_str_no_equals(void)
 {
 	char buf[64] = {0};
 	CHECK_EQ_INT(http_arg_str(mkreq("encodingX"), "encoding", buf, sizeof(buf)), -1);
+}
+
+/* Regression: a parameter name must not match inside a longer token
+ * (e.g. "lables" must not match inside "notlables"). */
+static void test_arg_str_boundary(void)
+{
+	char buf[64] = {0};
+	CHECK_EQ_INT(http_arg_str(mkreq("notlables=XXX&lables=ALL"), "lables", buf, sizeof(buf)), 0);
+	CHECK_STR_EQ(buf, "ALL");
 }
 
 /* Regression: a value that exactly fills the buffer must be rejected,
@@ -122,10 +140,12 @@ int main(void)
 	RUN_TEST(test_arg_long_basic);
 	RUN_TEST(test_arg_long_missing);
 	RUN_TEST(test_arg_long_no_equals);
+	RUN_TEST(test_arg_long_boundary);
 	RUN_TEST(test_arg_str_basic);
 	RUN_TEST(test_arg_str_last_param);
 	RUN_TEST(test_arg_str_missing);
 	RUN_TEST(test_arg_str_no_equals);
+	RUN_TEST(test_arg_str_boundary);
 	RUN_TEST(test_arg_str_exact_fit_rejected);
 	RUN_TEST(test_arg_str_max_fit_accepted);
 	RUN_TEST(test_arg_str_pct2c_single);

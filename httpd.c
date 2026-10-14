@@ -422,7 +422,8 @@ static void httpd_handle_request(connection *conn) {
 			continue;
 		}
 
-		ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - inbytes);
+		/* keep one byte for the NUL so strstr() never reads past inbuf */
+		ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - 1 - inbytes);
 		if (ret < 0)
 		{
 			if (ret != -EAGAIN) {
@@ -436,7 +437,7 @@ static void httpd_handle_request(connection *conn) {
 			break;
 
 		/* buf is full, but we can not search the end of HTTP header */
-		if (inbytes == sizeof(inbuf))
+		if (inbytes == sizeof(inbuf) - 1)
 			goto close_fd;
 	}
 
@@ -647,8 +648,9 @@ static void httpd_showversion(void)
 
 int main(int argc, char *argv[])
 {
-	int args, errno;
+	int args;
 	int ch;
+	int rc;
 
 	while (1) {
 		ch = getopt_long(argc, argv, short_opts, long_opts, &args);
@@ -696,6 +698,7 @@ int main(int argc, char *argv[])
 				break;
 			case 'V':
 				httpd_showversion();
+				break;
 			case 'h':
 			default:
 				httpd_showhelp();
@@ -720,7 +723,7 @@ int main(int argc, char *argv[])
 
 	printf("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
 	conntype_initialize();
-	errno = httpd(config);
+	rc = httpd(config);
 
-	return errno;
+	return rc;
 }
