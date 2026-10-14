@@ -8,6 +8,9 @@
  * This exercises those code paths deterministically on any machine, without
  * depending on the host actually having that hardware.
  *
+ * The fixtures live in static storage and are reset for every case, so the
+ * tests never allocate heap memory and there is nothing to leak.
+ *
  * This work is licensed under the terms of the GNU GPL, version 2 or later.
  */
 
@@ -43,12 +46,18 @@ struct output defop = { .output_type = OUTPUT_BUF, .done = NULL };
 
 /* NETATOP / GPUSTAT live in atop.h and gate the PRN / PRE printers. */
 
+/*
+ * Statically-allocated fixtures. Using static storage (rather than malloc)
+ * keeps every test allocation-free, so there is nothing to leak.
+ */
+static struct sstat    g_ss;
+static struct tstat    g_tasks[4];
+static struct devtstat g_dt;
+
 static struct sstat *make_sstat(int cpu0_has_freq)
 {
-	struct sstat *ss = calloc(1, sizeof(*ss));
-	CHECK(ss != NULL);
-	if (!ss)
-		return NULL;
+	struct sstat *ss = &g_ss;
+	memset(ss, 0, sizeof(*ss));
 
 	/* CPU: two cpus, so json_calc_freqscale is driven with different
 	 * combinations of maxfreq / ticks / cnt across the two invocations. */
@@ -85,7 +94,7 @@ static struct sstat *make_sstat(int cpu0_has_freq)
 	strcpy(ss->gpu.gpu[1].type, "TestGPU2");
 	ss->gpu.gpu[1].gpupercnow = 7;
 
-	/* PSI present */
+	/* PSI present (overridable per case). */
 	ss->psi.present = 1;
 
 	/* LVM / MDD / DSK - loops terminate on an empty name[0]; use two each
@@ -140,13 +149,13 @@ static struct sstat *make_sstat(int cpu0_has_freq)
 	return ss;
 }
 
-static struct devtstat make_devtstat(void)
+static struct devtstat *make_devtstat(void)
 {
-	struct devtstat dt;
-	memset(&dt, 0, sizeof(dt));
+	struct devtstat *dt = &g_dt;
+	struct tstat *tasks = g_tasks;
 
-	struct tstat *tasks = calloc(4, sizeof(struct tstat));
-	CHECK(tasks != NULL);
+	memset(dt, 0, sizeof(*dt));
+	memset(tasks, 0, sizeof(g_tasks));
 
 	/* task 0: a real process, killed by a signal with a core dump, and a
 	 * name containing characters that must be escaped to '#'. */
@@ -186,147 +195,124 @@ static struct devtstat make_devtstat(void)
 	tasks[3].gen.tgid = 201;
 	strcpy(tasks[3].gen.name, "thread");
 
-	dt.taskall = tasks;
-	dt.ntaskall = 4;
-	dt.nprocall = 3;
-	dt.nprocactive = 3;
+	dt->taskall = tasks;
+	dt->ntaskall = 4;
+	dt->nprocall = 3;
+	dt->nprocactive = 3;
 	return dt;
 }
 
+/* A single jsonout() invocation described declaratively. */
+struct json_tc {
+	int         cpu0_has_freq;
+	int         flags;
+	const char *labels;
+	int         hidecmd;
+	int         psi_present;
+	time_t      ts;
+	int         expect_ok;    /* 1: ret must be 0; 0: ret must be non-zero */
+	int         check_offset; /* also assert the OUTPUT_BUF sink was reset */
+};
+
+static void run_json_tc(const struct json_tc *tc)
+{
+	struct sstat *ss = make_sstat(tc->cpu0_has_freq);
+	ss->psi.present = tc->psi_present;
+	struct devtstat *dt = make_devtstat();
+
+	char labels[64];
+	snprintf(labels, sizeof(labels), "%s", tc->labels);
+
+	hidecmdline = tc->hidecmd;
+	int ret = jsonout(tc->flags, labels, tc->ts, 1, dt, ss, 0, 0, 0, NULL);
+	hidecmdline = 0;
+
+	if (tc->expect_ok)
+		CHECK_EQ_INT(ret, 0);
+	else
+		CHECK(ret != 0);
+
+	if (tc->check_offset)
+		CHECK_EQ_INT(defop.ob.offset, 0);
+}
+
+/* The "ALL" label set with PRN + PRE enabled: exercises every printer. */
 static void test_jsonout_all_labels(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	char labels[] = "ALL";
-	int flags = NETATOP | GPUSTAT; /* enable PRN + PRE printers */
-	int ret = jsonout(flags, labels, 1234567890, 1,
-	                  &dt, ss, 0, 0, 0, NULL);
-	CHECK_EQ_INT(ret, 0);
-	/* OUTPUT_BUF is reset by output_samp_done at the end of jsonout. */
-	CHECK_EQ_INT(defop.ob.offset, 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .flags = NETATOP | GPUSTAT, .labels = "ALL",
+		.psi_present = 1, .ts = 1234567890, .expect_ok = 1, .check_offset = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* Second configuration to cover the remaining json_calc_freqscale branches
  * (no maxfreq) and the per-cpu "nothing known" case. */
 static void test_jsonout_freqscale_variants(void)
 {
-	struct sstat *ss = make_sstat(0);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	char labels[] = "CPU,cpu";
-	int ret = jsonout(0, labels, 1, 1, &dt, ss, 0, 0, 0, NULL);
-	CHECK_EQ_INT(ret, 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 0, .labels = "CPU,cpu", .psi_present = 1,
+		.ts = 1, .expect_ok = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* hidecmdline replaces every command line with "***". */
 static void test_jsonout_hidecmdline(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	hidecmdline = 1;
-	char labels[] = "PRG,PRC,PRM";
-	int ret = jsonout(0, labels, 1, 1, &dt, ss, 0, 0, 0, NULL);
-	CHECK_EQ_INT(ret, 0);
-	hidecmdline = 0;
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .labels = "PRG,PRC,PRM", .hidecmd = 1,
+		.psi_present = 1, .ts = 1, .expect_ok = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* A single valid label still produces a full document. */
 static void test_jsonout_single_label(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	char labels[] = "MEM";
-	int ret = jsonout(0, labels, 1, 1, &dt, ss, 0, 0, 0, NULL);
-	CHECK_EQ_INT(ret, 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .labels = "MEM", .psi_present = 1,
+		.ts = 1, .expect_ok = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* Error path: label list starting with '-'. */
 static void test_jsonout_leading_dash(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	char labels[] = "-CPU";
-	int ret = jsonout(0, labels, 1, 1, &dt, ss, 0, 0, 0, NULL);
-	CHECK(ret != 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .labels = "-CPU", .psi_present = 1, .ts = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* Error path: an unknown label. */
 static void test_jsonout_unknown_label(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	char labels[] = "CPU,NOPE";
-	int ret = jsonout(0, labels, 1, 1, &dt, ss, 0, 0, 0, NULL);
-	CHECK(ret != 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .labels = "CPU,NOPE", .psi_present = 1, .ts = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* PSI printer short-circuits when pressure stats are not supported. */
 static void test_jsonout_psi_absent(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	ss->psi.present = 0;
-	char labels[] = "PSI";
-	int ret = jsonout(0, labels, 1, 1, &dt, ss, 0, 0, 0, NULL);
-	CHECK_EQ_INT(ret, 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .labels = "PSI", .psi_present = 0,
+		.ts = 1, .expect_ok = 1,
+	};
+	run_json_tc(&tc);
 }
 
 /* PRN/PRE printers short-circuit when the netatop / GPU flags are absent. */
 static void test_jsonout_prn_pre_disabled(void)
 {
-	struct sstat *ss = make_sstat(1);
-	if (!ss)
-		return;
-	struct devtstat dt = make_devtstat();
-
-	char labels[] = "PRN,PRE";
-	int ret = jsonout(0 /* no NETATOP, no GPUSTAT */, labels, 1, 1,
-	                  &dt, ss, 0, 0, 0, NULL);
-	CHECK_EQ_INT(ret, 0);
-
-	free(dt.taskall);
-	free(ss);
+	const struct json_tc tc = {
+		.cpu0_has_freq = 1, .flags = 0, .labels = "PRN,PRE",
+		.psi_present = 1, .ts = 1, .expect_ok = 1,
+	};
+	run_json_tc(&tc);
 }
 
 int main(void)

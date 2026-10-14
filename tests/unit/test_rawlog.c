@@ -78,23 +78,34 @@ static void test_parse_invalid_files(void)
 
 static long first_sample_time;
 static long last_sample_time;
-static const char *sample;
+
+/*
+ * Open the developer-provided sample raw-log read-only. All access to the
+ * sample goes through this single call site, with O_NOFOLLOW to refuse
+ * symlinks and no prior stat()/access() check, so there is no
+ * time-of-check/time-of-use window. Returns -1 when no sample is configured.
+ */
+static int open_sample_ro(void)
+{
+	const char *s = getenv("RAWLOG_SAMPLE");
+	if (!s)
+		return -1;
+	return open(s, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+}
 
 static int load_sample_into_tmpdir(void)
 {
-	sample = getenv("RAWLOG_SAMPLE");
-	if (!sample)
+	int in = open_sample_ro();
+	if (in < 0)
 		return 0;
 
 	setup_tmpdir();
 	char dst[512];
 	snprintf(dst, sizeof(dst), "%s/atop_sample", tmpdir);
 
-	int in = open(sample, O_RDONLY | O_NOFOLLOW);
-	int out = open(dst, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW, 0600);
-	if (in < 0 || out < 0) {
-		if (in >= 0) close(in);
-		if (out >= 0) close(out);
+	int out = open(dst, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+	if (out < 0) {
+		close(in);
 		return 0;
 	}
 	char buf[65536];
@@ -166,10 +177,7 @@ static void test_get_record(void)
  */
 static int read_sample_header(struct rawheader *rh)
 {
-	const char *s = getenv("RAWLOG_SAMPLE");
-	if (!s)
-		return 0;
-	int fd = open(s, O_RDONLY | O_NOFOLLOW);
+	int fd = open_sample_ro();
 	if (fd < 0)
 		return 0;
 	ssize_t n = read(fd, rh, sizeof(*rh));
@@ -183,7 +191,7 @@ static void write_header_dir(char *dir, const struct rawheader *rh)
 	CHECK(mkdtemp(dir) != NULL);
 	char path[512];
 	snprintf(path, sizeof(path), "%s/atop_hdr", dir);
-	int fd = open(path, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW, 0600);
+	int fd = open(path, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
 	if (fd >= 0) {
 		ssize_t w = write(fd, rh, sizeof(*rh));
 		(void)w;
@@ -191,60 +199,62 @@ static void write_header_dir(char *dir, const struct rawheader *rh)
 	}
 }
 
-/* A file with a valid header but no records exercises the free_cache path. */
-static void test_parse_header_only(void)
+/*
+ * Take the valid sample header, optionally corrupt it, write it on its own in
+ * a fresh directory and confirm parse_all tolerates the rejected file (the
+ * NULL corrupter yields a valid header-only file, exercising free_cache).
+ */
+static void check_header_variant(void (*corrupt)(struct rawheader *))
 {
 	struct rawheader rh;
 	if (!read_sample_header(&rh)) {
 		printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
 		return;
 	}
+	if (corrupt)
+		corrupt(&rh);
 	char dir[256];
 	write_header_dir(dir, &rh);
 	CHECK_EQ_INT(rawlog_parse_all(dir), 0);
+}
+
+static void corrupt_headlen(struct rawheader *rh)
+{
+	rh->rawheadlen = rh->rawheadlen + 1; /* corrupt the declared length */
+}
+
+static void corrupt_version(struct rawheader *rh)
+{
+	rh->aversion = 0xFFFF; /* MSB set, 0x7fff: cannot match getnumvers() */
+}
+
+static void corrupt_magic(struct rawheader *rh)
+{
+	rh->magic = 0xdeadbeef; /* not MYMAGIC */
+}
+
+/* A file with a valid header but no records exercises the free_cache path. */
+static void test_parse_header_only(void)
+{
+	check_header_variant(NULL);
 }
 
 /* A header whose declared length is wrong must fail verification. */
 static void test_parse_bad_headlen(void)
 {
-	struct rawheader rh;
-	if (!read_sample_header(&rh)) {
-		printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
-		return;
-	}
-	rh.rawheadlen = rh.rawheadlen + 1; /* corrupt the declared length */
-	char dir[256];
-	write_header_dir(dir, &rh);
-	/* parse_all tolerates the rejected file and still returns 0 */
-	CHECK_EQ_INT(rawlog_parse_all(dir), 0);
+	check_header_variant(corrupt_headlen);
 }
 
 /* A header advertising an incompatible atop version must fail verification. */
 static void test_parse_bad_version(void)
 {
-	struct rawheader rh;
-	if (!read_sample_header(&rh)) {
-		printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
-		return;
-	}
-	rh.aversion = 0xFFFF; /* MSB set, version 0x7fff: cannot match getnumvers() */
-	char dir[256];
-	write_header_dir(dir, &rh);
-	CHECK_EQ_INT(rawlog_parse_all(dir), 0);
+	check_header_variant(corrupt_version);
 }
 
 /* A full-size header with a wrong magic must fail verification. */
 static void test_parse_bad_magic(void)
 {
-	struct rawheader rh;
-	if (!read_sample_header(&rh)) {
-		printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
-		return;
-	}
-	rh.magic = 0xdeadbeef; /* not MYMAGIC */
-	char dir[256];
-	write_header_dir(dir, &rh);
-	CHECK_EQ_INT(rawlog_parse_all(dir), 0);
+	check_header_variant(corrupt_magic);
 }
 
 int main(void)

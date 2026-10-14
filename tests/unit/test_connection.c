@@ -82,6 +82,8 @@ static void test_socket_roundtrip(void)
 
 	connection *listener = conn_create(ct, 0, "127.0.0.1");
 	CHECK(listener != NULL);
+	if (listener == NULL)
+		return;
 	CHECK_EQ_INT(conn_listen(listener), 0);
 
 	/* discover the ephemeral port we actually bound to */
