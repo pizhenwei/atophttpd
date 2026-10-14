@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Plain build sanity check, with and without the optional TLS backend.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (USE_TLS=${{ matrix.use_tls }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        use_tls: ["", "yes"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev libssl-dev
+
+      - name: Build atophttpd
+        run: make USE_TLS=${{ matrix.use_tls }}
+
+      - name: Build atop submodule (log generator)
+        run: make atop-bin
+
+  # ---------------------------------------------------------------------------
+  # Unit + integration tests with gcov coverage, gated at >= 90% line coverage.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: tests + coverage (>=90%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
+                                  lcov python3
+
+      - name: Build atophttpd (clean build check)
+        run: make
+
+      - name: Run unit + integration tests with coverage gate
+        run: make coverage COV=90
+
+      - name: Upload HTML coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/html
+          if-no-files-found: ignore
+
+      - name: Upload lcov report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-info
+          path: coverage.info
+          if-no-files-found: ignore

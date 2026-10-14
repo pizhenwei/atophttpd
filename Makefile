@@ -1,5 +1,5 @@
 CFLAGS = -Iatop -g -O2 -lz -Wall -Wcast-align -std=gnu11
-OBJS = cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o
+OBJS = cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o http_args.o
 BIN = atophttpd
 PREFIX := $(prefix)
 CC=gcc
@@ -32,5 +32,28 @@ version.o:
 submodule:
 	git submodule update --init --recursive
 
+# --- testing -------------------------------------------------------------
+# Build the atop submodule binary (used to generate raw-logs for the tests).
+atop-bin: submodule
+	@make -C atop versdate.h
+	@make -C atop atop
+
+unit:
+	@make -C tests unit
+
+integration: bin atop-bin
+	@make -C tests integration
+
+check: unit integration
+
+# Full instrumented coverage run (unit + integration) with a threshold gate.
+# Override the threshold with: make coverage COV=85
+coverage:
+	@bash tests/coverage.sh $(or $(COV),90)
+
+.PHONY: all install deb bin submodule atop-bin unit integration check coverage clean
+
 clean:
-	@rm -f $(BIN) *.o *.deb
+	@rm -f $(BIN) *.o *.deb *.gcda *.gcno coverage.info
+	@rm -rf coverage
+	@make -C tests clean 2>/dev/null || true

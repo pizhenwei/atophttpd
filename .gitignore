@@ -59,3 +59,17 @@ tags
 
 # debian package
 *.deb
+
+# coverage / test artefacts
+*.gcda
+*.gcno
+*.gcov
+coverage.info
+coverage/
+__pycache__/
+.sonar-test-scratch/
+
+# compiled unit-test binaries (keep the sources/headers next to them)
+tests/unit/test_*
+!tests/unit/test_*.c
+!tests/unit/test_*.h

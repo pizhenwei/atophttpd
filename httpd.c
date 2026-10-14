@@ -30,6 +30,7 @@
 #include <zlib.h>
 
 #include "httpd.h"
+#include "http_args.h"
 #include "output.h"
 
 #include "version.h"
@@ -67,6 +68,7 @@ unsigned int pagesize;
 unsigned short hertz;
 struct utsname utsname;
 int hidecmdline = 0;
+static volatile sig_atomic_t httpd_stop = 0;
 
 #define INBUF_SIZE	4096
 #define URL_LEN		1024
@@ -171,49 +173,6 @@ static void http_show_samp_done(struct output *op, connection *conn)
 
 	http_response_200(conn, compbuf, complen, http_content_type_deflate, http_content_type_html);
 	free(compbuf);
-}
-
-static int http_arg_long(char *req, char *needle, long *l)
-{
-	char *s = strstr(req, needle);
-	if (!s)
-		return -1;
-
-	s += strlen(needle);
-	if (*s != '=')
-		return -1;
-
-	*l = atol(++s);
-
-	return 0;
-}
-
-static int http_arg_str(char *req, char *needle, char *p, int len)
-{
-        char *s = strstr(req, needle);
-        if (!s)
-                return -1;
-
-        s += strlen(needle);
-        if (*s++ != '=')
-                return -1;
-
-        char *e = strchr(s, '&');
-        if (!e)
-                e = s + strlen(s);
-
-	if (e - s >= len)
-		return -1;
-
-        memcpy(p, s, e - s);
-        p[e - s] = '\0';
-	while ((p = strstr(p, "%2C")) != NULL)
-	{
-		*(p++) = ',';
-		memmove(p, p + 2, strlen(p + 2) + 1);
-	}
-
-        return 0;
 }
 
 static void http_showsamp(char *req, connection *conn)
@@ -558,7 +517,7 @@ static void *httpd_routine(connection **listeners, char *log_path)
 	}
 
 	printf("Ready to serve\n");
-	while (1) {
+	while (!httpd_stop) {
 		ret = epoll_wait(epollfd, &event, 1, 1000);
 		if (!ret) {
 			continue;
@@ -588,12 +547,22 @@ static void *httpd_routine(connection **listeners, char *log_path)
 		free(conn);
 	}
 
+	close(epollfd);
 	return NULL;
+}
+
+static void httpd_on_terminate(int sig)
+{
+	/* request a clean shutdown so the main loop can return normally */
+	(void)sig;
+	httpd_stop = 1;
 }
 
 static int httpd(struct atophttd_context ctx)
 {
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGTERM, httpd_on_terminate);
+	signal(SIGINT, httpd_on_terminate);
 	connection *listener;
 	int conn_index, ret;
 

@@ -181,30 +181,3 @@ struct cache_t *cache_get_recent()
 
 	return caches[nr_caches - 1];
 }
-
-#ifdef CACHE_TEST
-int main()
-{
-	assert(!cache_find("test0"));
-
-	struct cache_t *cache0 = cache_alloc("test0");
-	cache_set(cache0, 100, 1000);
-	assert(cache0->elems[0].time == 100);
-	cache_set(cache0, 102, 1002);
-	assert(cache0->elems[0].time == 100);
-	assert(cache0->elems[1].time == 102);
-	cache_set(cache0, 101, 1001);
-	assert(cache0->nr_elems == 3);
-	assert(cache0->elems[0].time < cache0->elems[1].time);
-	assert(cache0->elems[1].time < cache0->elems[2].time);
-
-	struct cache_t *cache1 = cache_alloc("test1");
-	cache_set(cache1, 200, 2000);
-	cache_free("test0");
-	assert(nr_caches == 1);
-	assert(caches[0]->elems[0].time == 200);
-	assert(caches[0]->elems[0].off == 2000);
-
-	return 0;
-}
-#endif

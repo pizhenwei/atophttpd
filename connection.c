@@ -93,7 +93,7 @@ int get_conntype_index_by_name(const char* typename) {
 
 int listen_to_port(int port, char* bindaddr, int af) {
 	struct addrinfo hints;
-	struct addrinfo *res, *p;
+	struct addrinfo *res = NULL, *p;
 	int ret, sockfd = -1;
 	char _port[6];
 	static const int reuse = 1;
@@ -112,7 +112,8 @@ int listen_to_port(int port, char* bindaddr, int af) {
 	ret = getaddrinfo(bindaddr, _port, &hints, &res);
 	if (ret != 0) {
 		perror("failed get addr info: ");
-		goto error;
+		/* res is left unset on failure; nothing to free */
+		return -1;
 	}
 
 	for (p = res; p != NULL; p = p->ai_next) {
@@ -159,6 +160,7 @@ error:
 	}
 
 end:
-	freeaddrinfo(res);
+	if (res)
+		freeaddrinfo(res);
 	return sockfd;
 }
