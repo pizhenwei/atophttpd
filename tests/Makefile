@@ -8,6 +8,7 @@
 # driven by the top-level Makefile: `make coverage`.
 
 ROOT    := ..
+ABSROOT := $(abspath $(ROOT))
 CC      ?= gcc
 CFLAGS  := -I$(ROOT) -I$(ROOT)/atop -g -O0 -Wall -std=gnu11
 LDLIBS  := -lz
@@ -39,7 +40,7 @@ unit/test_json: unit/test_json.c $(ROOT)/json.c $(ROOT)/output.c $(ROOT)/version
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 integration:
-	cd $(ROOT) && ATOPHTTPD_BIN=$(ROOT)/atophttpd ATOP_BIN=$(ROOT)/atop/atop \
+	cd $(ABSROOT) && ATOPHTTPD_BIN=$(ABSROOT)/atophttpd ATOP_BIN=$(ABSROOT)/atop/atop \
 		python3 -m unittest -v tests.integration.test_integration
 
 clean:

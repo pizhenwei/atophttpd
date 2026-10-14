@@ -1,4 +1,14 @@
-CFLAGS = -Iatop -g -O2 -lz -Wall -Wcast-align -std=gnu11
+# Base build flags.
+CFLAGS = -Iatop -g -O2 -Wall -Wcast-align -std=gnu11
+# Hardening flags, matching Debian's dpkg-buildflags defaults: stack canaries,
+# fortified libc calls, a position-independent executable (full ASLR), and a
+# read-only GOT resolved at startup (full RELRO).
+HARDEN_CFLAGS = -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE \
+               -Wformat -Werror=format-security
+HARDEN_LDFLAGS = -pie -Wl,-z,relro -Wl,-z,now
+CFLAGS += $(HARDEN_CFLAGS)
+LDFLAGS += $(HARDEN_LDFLAGS)
+LDLIBS = -lz
 OBJS = cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o http_args.o
 BIN = atophttpd
 PREFIX := $(prefix)
@@ -13,22 +23,24 @@ CC=gcc
 ATOP_VERSION ?= v2.11.1
 
 ifneq (,$(filter $(USE_TLS),yes YES y Y 1))
-	CFLAGS += -lssl -lcrypto -DUSE_TLS
+	CFLAGS += -DUSE_TLS
+	LDLIBS += -lssl -lcrypto
 endif
 
 all: submodule bin
-	$(CC) -o $(BIN) $(OBJS) $(CFLAGS)
+	$(CC) -o $(BIN) $(OBJS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
 install: bin
 	install -D -s $(BIN) $(PREFIX)/usr/bin/$(BIN)
-	install -D atophttpd.service $(PREFIX)/lib/systemd/system/atophttpd.service
-	install -D man/atophttpd.1 $(PREFIX)/usr/share/man/man1/atophttpd.1
+	install -D -m 0644 atophttpd.service $(PREFIX)/usr/lib/systemd/system/atophttpd.service
+	install -D -m 0644 packaging/debian/atophttpd.default $(PREFIX)/etc/default/atophttpd
+	install -D -m 0644 man/atophttpd.1 $(PREFIX)/usr/share/man/man1/atophttpd.1
 
 deb: bin
-	@sh packaging/debian/makedeb.sh `pwd`
+	@sh packaging/debian/makedeb.sh "$(CURDIR)"
 
 bin: $(OBJS)
-	$(CC) -o $(BIN) $(OBJS) $(CFLAGS)
+	$(CC) -o $(BIN) $(OBJS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) $*.c -o $*.o
@@ -48,7 +60,7 @@ atop-bin: submodule
 	@make -C atop versdate.h
 	@make -C atop atop
 
-unit:
+unit: version.o
 	@make -C tests unit
 
 integration: bin atop-bin
