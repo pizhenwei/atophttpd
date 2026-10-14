@@ -137,7 +137,7 @@ static int cache_elems_cmp(const void *p1, const void *p2)
 	struct cache_elem_t *e1 = (struct cache_elem_t *)p1;
 	struct cache_elem_t *e2 = (struct cache_elem_t *)p2;
 
-	return e1->time > e2->time;
+	return (e1->time > e2->time) - (e1->time < e2->time);
 }
 
 void cache_set(struct cache_t *cache, time_t time, off_t off)
@@ -165,7 +165,8 @@ static int cache_cmp(const void *p1, const void *p2)
 	struct cache_t **c1 = (struct cache_t **)p1;
 	struct cache_t **c2 = (struct cache_t **)p2;
 
-	return (*c1)->elems[0].time > (*c2)->elems[0].time;
+	return ((*c1)->elems[0].time > (*c2)->elems[0].time) -
+	       ((*c1)->elems[0].time < (*c2)->elems[0].time);
 }
 
 void cache_sort()

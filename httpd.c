@@ -159,12 +159,14 @@ static void http_show_samp_done(struct output *op, connection *conn)
 	}
 
 	/* compress data for encoding deflate */
-	char *compbuf = malloc(op->ob.offset);
-	unsigned long complen = op->ob.offset;
+	unsigned long complen = compressBound(op->ob.offset);
+	char *compbuf = malloc(complen);
 
-	if (compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK){
+	if (!compbuf || compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK) {
 		http_prepare_response(conn);
 		conn_write(conn, http_404, strlen(http_404));
+		free(compbuf);
+		return;
 	}
 
 	http_response_200(conn, compbuf, complen, http_content_type_deflate, http_content_type_html);
@@ -200,7 +202,7 @@ static int http_arg_str(char *req, char *needle, char *p, int len)
         if (!e)
                 e = s + strlen(s);
 
-	if (e - s > len)
+	if (e - s >= len)
 		return -1;
 
         memcpy(p, s, e - s);
@@ -208,7 +210,7 @@ static int http_arg_str(char *req, char *needle, char *p, int len)
 	while ((p = strstr(p, "%2C")) != NULL)
 	{
 		*(p++) = ',';
-		memmove(p, p + 2, strlen(p));
+		memmove(p, p + 2, strlen(p + 2) + 1);
 	}
 
         return 0;
@@ -378,7 +380,7 @@ static void http_process_request(char *req, connection *conn)
 	char location[URL_LEN] = {0};
 	char *c;
 
-	if (strlen(req) > URL_LEN) {
+	if (strlen(req) >= URL_LEN) {
 		http_prepare_response(conn);
 		conn_write(conn, http_404, strlen(http_404));
 		return;
@@ -489,7 +491,7 @@ static void httpd_handle_request(connection *conn) {
 		goto close_fd;
 
 	/* Ex, GET /hello HTTP/1.1 */
-	if ((httpver - inbuf > URL_LEN + 6) || (httpver - inbuf < 6))
+	if ((httpver - inbuf >= URL_LEN + 6) || (httpver - inbuf < 6))
 		goto close_fd;
 
 	memcpy(httpreq, inbuf + 5, httpver - inbuf - 6);
