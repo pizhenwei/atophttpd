@@ -1,5 +1,5 @@
 # Base build flags.
-CFLAGS = -Iatop -g -O2 -Wall -Wcast-align -std=gnu11
+CFLAGS = -Iatop -g -O2 -Wall -Wcast-align -std=gnu11 -pthread
 # Hardening flags, matching Debian's dpkg-buildflags defaults: stack canaries,
 # fortified libc calls, a position-independent executable (full ASLR), and a
 # read-only GOT resolved at startup (full RELRO).

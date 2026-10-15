@@ -26,8 +26,8 @@ if ! command -v "$CC" >/dev/null 2>&1; then
 fi
 
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
-CFLAGS="-Iatop -I. -g -O1 -Wall -std=gnu11 $SAN -fsanitize=fuzzer-no-link"
-LDLIBS="-lz"
+CFLAGS="-Iatop -I. -g -O1 -Wall -std=gnu11 $SAN -fsanitize=fuzzer-no-link -pthread"
+LDLIBS="-lz -pthread"
 
 CORPUS="$ROOT/fuzz/corpus"
 CRASHES="$ROOT/fuzz/crashes"

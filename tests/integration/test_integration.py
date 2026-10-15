@@ -380,6 +380,66 @@ class ShowsampDataTests(unittest.TestCase):
         self.assertIn("CPU", obj)
 
 
+class ConcurrencyTests(unittest.TestCase):
+    """Hammer the server with many parallel requests.
+
+    This exercises the worker pool and the cache read/write lock: several
+    workers decode samples (read lock) while the acceptor periodically
+    re-parses the log (write lock). Under AddressSanitizer a use-after-free
+    or heap corruption from a cache race would abort the server here.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not _sample_epochs:
+            raise unittest.SkipTest("no sample epochs available")
+        cls.ts = _sample_epochs[len(_sample_epochs) // 2]
+
+    def _showsamp(self, _):
+        status, _, body = _raw_request(
+            "/showsamp?timestamp=%d&lables=ALL&encoding=none" % self.ts)
+        if b"200" not in status:
+            return ("bad status", status)
+        try:
+            obj = json.loads(body)
+        except Exception as exc:  # noqa: BLE001
+            return ("bad json", repr(exc))
+        if obj.get("timestamp") != self.ts or "CPU" not in obj:
+            return ("bad body", obj.get("timestamp"))
+        return None
+
+    def test_parallel_showsamp(self):
+        # 8 client threads (> the 4 server workers) each issue a tight loop of
+        # requests: this saturates the worker pool and the cache read lock
+        # while keeping every connect->send pair prompt (a connection that
+        # stays silent is intentionally dropped by the slow-client guard, so we
+        # must not starve the senders the way a huge thread fan-out would).
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run(_):
+            return [e for e in (self._showsamp(i) for i in range(25)) if e]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            errors = [e for batch in pool.map(run, range(8)) for e in batch]
+        self.assertEqual(errors, [], "concurrent requests failed: %r" % errors[:5])
+
+    def test_parallel_mixed_endpoints(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(i):
+            if i % 3 == 0:
+                status, _, _ = _raw_request("/ping")
+                return None if b"200" in status else ("ping", status)
+            return self._showsamp(i)
+
+        def run(_):
+            return [e for e in (one(i) for i in range(20)) if e]
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            errors = [e for batch in pool.map(run, range(8)) for e in batch]
+        self.assertEqual(errors, [], "mixed concurrent requests failed: %r" % errors[:5])
+
+
 class CliTests(unittest.TestCase):
     """Exercise main()'s option parsing and start-up error handling."""
 

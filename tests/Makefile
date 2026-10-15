@@ -10,7 +10,7 @@
 ROOT    := ..
 ABSROOT := $(abspath $(ROOT))
 CC      ?= gcc
-CFLAGS  := -I$(ROOT) -I$(ROOT)/atop -g -O0 -Wall -std=gnu11
+CFLAGS  := -I$(ROOT) -I$(ROOT)/atop -g -O0 -Wall -std=gnu11 -pthread
 LDLIBS  := -lz
 
 UNIT_BINS := unit/test_cache unit/test_output unit/test_http_args \

@@ -16,8 +16,8 @@ ROOT="$(pwd)"
 
 CC="${CC:-gcc}"
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer"
-CFLAGS="-Iatop -I. -g -O1 -Wall -std=gnu11 $SAN"
-LDLIBS="-lz"
+CFLAGS="-Iatop -I. -g -O1 -Wall -std=gnu11 $SAN -pthread"
+LDLIBS="-lz -pthread"
 
 MODULES="cache httpd json output rawlog connection socket tls http_args log"
 OBJS="cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o http_args.o log.o"

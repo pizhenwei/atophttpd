@@ -208,6 +208,8 @@ int rawlog_parse_all(const char *path)
 		return -errno;
 	}
 
+	/* Single writer: exclude all cache readers while the array is rewritten. */
+	cache_wrlock();
 	while ((dirent = readdir(dir))) {
 		if (dirent->d_type != DT_REG)
 			continue;
@@ -218,6 +220,7 @@ int rawlog_parse_all(const char *path)
 	}
 
 	cache_sort();
+	cache_unlock();
 
 	closedir(dir);
 
@@ -386,6 +389,12 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *
 		return -ENOMEM;
 	}
 
+	/*
+	 * Hold the cache read lock for the whole lifetime of the cache_t we are
+	 * about to use: the writer may free it between cache_get() and the final
+	 * dereference of cache->name / cache->elems below.
+	 */
+	cache_rdlock();
 	struct cache_t *cache = cache_get(ts, &off);
 	if (cache)
 		goto found;
@@ -472,6 +481,7 @@ found:
 close_fd:
 	close(fd);
 free_sstat:
+	cache_unlock();
 	free(sstat);
 
 	return ret;

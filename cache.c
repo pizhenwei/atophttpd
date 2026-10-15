@@ -9,6 +9,7 @@
  */
 
 #include <assert.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,23 @@
 
 static int nr_caches;
 static struct cache_t **caches;
+
+static pthread_rwlock_t cache_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
+void cache_rdlock(void)
+{
+	pthread_rwlock_rdlock(&cache_rwlock);
+}
+
+void cache_wrlock(void)
+{
+	pthread_rwlock_wrlock(&cache_rwlock);
+}
+
+void cache_unlock(void)
+{
+	pthread_rwlock_unlock(&cache_rwlock);
+}
 
 struct cache_t *cache_find(const char *name)
 {

@@ -14,6 +14,7 @@
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -510,6 +511,98 @@ static void httpd_update_cache(char *log_path)
 	update = now;
 }
 
+/*
+ * Worker pool. The acceptor thread runs the epoll loop and hands every
+ * accepted connection to a bounded queue; a fixed pool of worker threads drains
+ * the queue and serves requests concurrently. This keeps one slow client from
+ * stalling every other client, and lets independent requests read the raw-log
+ * cache in parallel under the cache read lock.
+ */
+#define WORKER_THREADS 4
+#define WORKQ_CAP 64
+
+static struct workqueue {
+	connection *items[WORKQ_CAP];
+	int head;
+	int tail;
+	int count;
+	int stop;
+	pthread_mutex_t mutex;
+	pthread_cond_t not_empty;
+	pthread_cond_t not_full;
+} workq = {
+	.mutex = PTHREAD_MUTEX_INITIALIZER,
+	.not_empty = PTHREAD_COND_INITIALIZER,
+	.not_full = PTHREAD_COND_INITIALIZER,
+};
+
+/* Producer: block (backpressure) while the queue is full, then enqueue. */
+static void workq_push(connection *conn)
+{
+	pthread_mutex_lock(&workq.mutex);
+	while (workq.count == WORKQ_CAP && !workq.stop)
+		pthread_cond_wait(&workq.not_full, &workq.mutex);
+
+	if (workq.stop) {
+		pthread_mutex_unlock(&workq.mutex);
+		conn_close(conn);
+		free(conn);
+		return;
+	}
+
+	workq.items[workq.tail] = conn;
+	workq.tail = (workq.tail + 1) % WORKQ_CAP;
+	workq.count++;
+	pthread_cond_signal(&workq.not_empty);
+	pthread_mutex_unlock(&workq.mutex);
+}
+
+/* Consumer: block until an item is available; return NULL once stopped+drained. */
+static connection *workq_pop(void)
+{
+	pthread_mutex_lock(&workq.mutex);
+	while (workq.count == 0 && !workq.stop)
+		pthread_cond_wait(&workq.not_empty, &workq.mutex);
+
+	if (workq.count == 0) {
+		pthread_mutex_unlock(&workq.mutex);
+		return NULL;
+	}
+
+	connection *conn = workq.items[workq.head];
+	workq.head = (workq.head + 1) % WORKQ_CAP;
+	workq.count--;
+	pthread_cond_signal(&workq.not_full);
+	pthread_mutex_unlock(&workq.mutex);
+
+	return conn;
+}
+
+static void workq_shutdown(void)
+{
+	pthread_mutex_lock(&workq.mutex);
+	workq.stop = 1;
+	pthread_cond_broadcast(&workq.not_empty);
+	pthread_cond_broadcast(&workq.not_full);
+	pthread_mutex_unlock(&workq.mutex);
+}
+
+static void *httpd_worker(void *arg)
+{
+	(void)arg;
+
+	for ( ; ; ) {
+		connection *conn = workq_pop();
+		if (!conn)
+			break;
+
+		httpd_handle_request(conn);
+		free(conn);
+	}
+
+	return NULL;
+}
+
 static void *httpd_routine(connection **listeners, char *log_path)
 {
 	int epollfd;
@@ -551,7 +644,25 @@ static void *httpd_routine(connection **listeners, char *log_path)
 	}
 
 	log_info("Ready to serve\n");
+
+	pthread_t workers[WORKER_THREADS];
+	int nr_workers = 0;
+	for (int i = 0; i < WORKER_THREADS; i++) {
+		if (pthread_create(&workers[i], NULL, httpd_worker, NULL) == 0)
+			nr_workers++;
+		else
+			log_warn("failed to create worker thread %d\n", i);
+	}
+	if (nr_workers == 0) {
+		log_err("Failed to create any worker thread, Exit.\n");
+		exit(1);
+	}
+
 	while (!httpd_stop) {
+		/* refresh the cache periodically (throttled to every few seconds)
+		 * so it stays current even when no request is in flight */
+		httpd_update_cache(log_path);
+
 		ret = epoll_wait(epollfd, &event, 1, 1000);
 		if (!ret) {
 			continue;
@@ -576,10 +687,14 @@ static void *httpd_routine(connection **listeners, char *log_path)
 			continue;
 		}
 
-		httpd_handle_request(conn);
-		httpd_update_cache(log_path);
-		free(conn);
+		/* hand the connection to a worker thread; the worker frees it */
+		workq_push(conn);
 	}
+
+	/* drain and stop the pool before returning */
+	workq_shutdown();
+	for (int i = 0; i < nr_workers; i++)
+		pthread_join(workers[i], NULL);
 
 	close(epollfd);
 	return NULL;

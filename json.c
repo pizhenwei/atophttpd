@@ -1025,7 +1025,7 @@ static void json_print_PRG(struct output *op, int flags, char *hp, struct sstat 
 	buflen = sprintf(br, ", %s: [", hp);
 	output_samp(op, br, buflen);
 
-	static char st[3];
+	char st[3] = {0};
 
 	for (i = 0; i < nact; i++, ps++) {
 		/* For one thread whose pid==tgid and isproc=n, it has the same
