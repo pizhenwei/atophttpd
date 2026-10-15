@@ -331,6 +331,25 @@ static void test_record_huge_totproc(void)
 	check_corrupt_first_record(offsetof(struct rawrecord, totproc), 0xfffffff0u);
 }
 
+/*
+ * Asking for a record when no raw-log is loaded at all must fail cleanly (the
+ * no-cache fallback path in rawlog_get_record), never crash or dereference an
+ * empty caches array. Destroys the global cache state, so it runs just before
+ * the churn test, which rebuilds its own.
+ */
+static void test_get_record_empty_cache(void)
+{
+	struct cache_t *stale;
+	while ((stale = cache_get_recent()) != NULL)
+		cache_free(stale->name);
+
+	char labels[] = "CPU";
+	struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
+	int ret = rawlog_get_record(100, labels, NULL, &op);
+	CHECK(ret < 0);
+	free(op.ob.buf);
+}
+
 /* ------------------------------------------------------------------ */
 /* Concurrency stress: many reader threads decode records (cache_rdlock)
  * while a writer thread keeps adding new log files, each of which forces a
@@ -471,6 +490,7 @@ int main(void)
 	RUN_TEST(test_parse_bad_magic);
 	RUN_TEST(test_record_huge_scomplen);
 	RUN_TEST(test_record_huge_totproc);
+	RUN_TEST(test_get_record_empty_cache);
 	RUN_TEST(test_concurrent_cache_access);
 	TEST_SUITE_END();
 }

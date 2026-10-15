@@ -382,6 +382,8 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *
 	int flags;
 	off_t off;
 	time_t recent_ts;
+	char *name = NULL;
+	int cache_flags = 0;
 
 	sstat = malloc(sizeof(struct sstat));
 	if (sstat == NULL) {
@@ -390,40 +392,55 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *
 	}
 
 	/*
-	 * Hold the cache read lock for the whole lifetime of the cache_t we are
-	 * about to use: the writer may free it between cache_get() and the final
-	 * dereference of cache->name / cache->elems below.
+	 * Resolve the record under the cache read lock, then copy out everything
+	 * the rest of the function needs (the file name, the record offset and the
+	 * header flags) and release the lock *before* any file I/O or the network
+	 * send. Holding the read lock across those would let a single slow-reading
+	 * client keep it for up to the socket send timeout, stalling the cache
+	 * writer -- and therefore the acceptor thread that takes the write lock --
+	 * which would stop new connections from being accepted. The raw-log file
+	 * stays valid on disk by path even if the writer later frees or rebuilds
+	 * the cache entry, so opening it lock-free is safe.
 	 */
 	cache_rdlock();
 	struct cache_t *cache = cache_get(ts, &off);
-	if (cache)
-		goto found;
-
-	log_debug("no record @%ld\n", ts);
-
-	cache = cache_get_recent();
 	if (!cache) {
-		ret = -EIO;
+		log_debug("no record @%ld\n", ts);
+
+		cache = cache_get_recent();
+		if (!cache) {
+			cache_unlock();
+			ret = -EIO;
+			goto free_sstat;
+		}
+
+		recent_ts = cache->elems[cache->nr_elems - 1].time;
+		if (ts < recent_ts) {
+			cache_unlock();
+			ret = -EIO;
+			goto free_sstat;
+		}
+
+		off = cache->elems[cache->nr_elems - 1].off;
+		log_debug("use recent @%ld from %s\n", cache->elems[cache->nr_elems - 1].time, cache->name);
+	}
+
+	name = strdup(cache->name);
+	cache_flags = cache->flags;
+	cache_unlock();
+
+	if (!name) {
+		ret = -ENOMEM;
 		goto free_sstat;
 	}
 
-	recent_ts = cache->elems[cache->nr_elems - 1].time;
-	if (ts < recent_ts) {
-		ret = -EIO;
-		goto free_sstat;
-	}
+	log_debug("time %ld, off %ld in %s\n", ts, off, name);
 
-	off = cache->elems[cache->nr_elems - 1].off;
-	log_debug("use recent @%ld from %s\n", cache->elems[cache->nr_elems - 1].time, cache->name);
-
-found:
-	log_debug("time %ld, off %ld in %s\n", ts, off, cache->name);
-
-	fd = open(cache->name, O_RDONLY);
+	fd = open(name, O_RDONLY);
 	if (fd < 0) {
-		log_err("%s: open \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, name);
 		ret = -errno;
-		goto free_sstat;
+		goto free_name;
 	}
 
 	ret = lseek(fd, off, SEEK_CUR);
@@ -435,11 +452,11 @@ found:
 
 	len = read(fd, &rr, sizeof(rr));
 	if (len != sizeof(rr)) {
-		log_err("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, name);
 		ret = -EIO;
 		goto close_fd;
 	}
-	log_debug("time %ld, off %ld in %s, rr.curtime %ld\n", ts, off, cache->name, rr.curtime);
+	log_debug("time %ld, off %ld in %s, rr.curtime %ld\n", ts, off, name, rr.curtime);
 
 	/* The record's compressed blobs must physically fit within the file.
 	 * Reject lengths that run past EOF before they are used to size any
@@ -447,7 +464,7 @@ found:
 	 * an unbounded malloc() in the decompression path below. */
 	struct stat rrst;
 	if (fstat(fd, &rrst) < 0) {
-		log_err("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, name);
 		ret = -errno;
 		goto close_fd;
 	}
@@ -456,32 +473,33 @@ found:
 	                        rr.ccomplen + rr.icomplen;
 	if (body > rrst.st_size || bloblen > (unsigned long)(rrst.st_size - body)) {
 		log_err("%s: time %ld, off %ld in %s, record exceeds file bounds\n",
-			__func__, ts, off, cache->name);
+			__func__, ts, off, name);
 		ret = -EINVAL;
 		goto close_fd;
 	}
 
 	ret = rawlog_get_sstat(fd, sstat, rr.scomplen);
 	if (ret) {
-		log_err("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, name);
 		goto close_fd;
 	}
 
 	ret = rawlog_get_devtstat(fd, &devtstat, &rr);
 	if (ret) {
-		log_err("%s: time %ld, off %ld in %s, get devtstat failed\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, get devtstat failed\n", __func__, ts, off, name);
 		goto close_fd;
 	}
 
-	flags = rawlog_record_flags(cache->flags, rr.flags);
+	flags = rawlog_record_flags(cache_flags, rr.flags);
 	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, sstat, rr.nexit, rr.noverflow, 0, conn, op);
 
 	rawlog_free_devtstat(&devtstat);
 
 close_fd:
 	close(fd);
+free_name:
+	free(name);
 free_sstat:
-	cache_unlock();
 	free(sstat);
 
 	return ret;
