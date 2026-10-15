@@ -13,6 +13,50 @@
 #include "test_framework.h"
 #include "cache.h"
 
+#ifdef CACHE_FAULT_INJECTION
+/*
+ * Allocation fault injection (coverage build only).
+ *
+ * Each counter is a countdown of successful allocations before the next one is
+ * forced to fail; -1 disables it, and a forced failure re-arms it to -1 so a
+ * single call is affected. Arm the counter immediately before the call under
+ * test, with no intervening allocation (no CHECK/printf that could alloc), so
+ * only the targeted allocation consumes it.
+ *
+ * Enabled only in the non-sanitised coverage/unit build: linker --wrap is
+ * incompatible with AddressSanitizer's own allocator interception, so the
+ * sanitiser and TSan builds compile this out and run the base suite.
+ */
+extern void *__real_calloc(size_t nmemb, size_t size);
+extern void *__real_realloc(void *ptr, size_t size);
+extern char *__real_strdup(const char *s);
+
+static int fail_calloc_at = -1;
+static int fail_realloc_at = -1;
+static int fail_strdup_at = -1;
+
+void *__wrap_calloc(size_t nmemb, size_t size)
+{
+	if (fail_calloc_at >= 0 && fail_calloc_at-- == 0)
+		return NULL;
+	return __real_calloc(nmemb, size);
+}
+
+void *__wrap_realloc(void *ptr, size_t size)
+{
+	if (fail_realloc_at >= 0 && fail_realloc_at-- == 0)
+		return NULL;
+	return __real_realloc(ptr, size);
+}
+
+char *__wrap_strdup(const char *s)
+{
+	if (fail_strdup_at >= 0 && fail_strdup_at-- == 0)
+		return NULL;
+	return __real_strdup(s);
+}
+#endif /* CACHE_FAULT_INJECTION */
+
 static void test_find_empty(void)
 {
 	CHECK(cache_find("nope") == NULL);
@@ -160,6 +204,63 @@ static void test_free_middle(void)
 	cache_free("c");
 }
 
+#ifdef CACHE_FAULT_INJECTION
+/* The cache_t struct allocation fails: nothing is registered. */
+static void test_alloc_oom_struct(void)
+{
+	fail_calloc_at = 0;
+	CHECK(cache_alloc("oom1") == NULL);
+	fail_calloc_at = -1;
+	CHECK(cache_find("oom1") == NULL);
+}
+
+/* The name strdup fails: the struct is freed, nothing is registered. */
+static void test_alloc_oom_name(void)
+{
+	fail_strdup_at = 0;
+	CHECK(cache_alloc("oom2") == NULL);
+	fail_strdup_at = -1;
+	CHECK(cache_find("oom2") == NULL);
+}
+
+/* The elems array allocation fails (second calloc): partials are freed. */
+static void test_alloc_oom_elems(void)
+{
+	fail_calloc_at = 1;
+	CHECK(cache_alloc("oom3") == NULL);
+	fail_calloc_at = -1;
+	CHECK(cache_find("oom3") == NULL);
+}
+
+/* The caches[] growth realloc fails: the half-built cache is freed, the
+ * existing array is untouched (no pointer loss). */
+static void test_alloc_oom_array(void)
+{
+	CHECK(cache_alloc("seed") != NULL);
+	fail_realloc_at = 0;
+	CHECK(cache_alloc("oom4") == NULL);
+	fail_realloc_at = -1;
+	CHECK(cache_find("oom4") == NULL);
+	CHECK(cache_find("seed") != NULL);
+	cache_free("seed");
+}
+
+/* The elems growth realloc fails: the record is dropped, not lost/corrupted. */
+static void test_set_oom_grow(void)
+{
+	struct cache_t *c = cache_alloc("setoom");
+	REQUIRE(c != NULL);
+	int max = c->max_elems;
+	for (int i = 0; i < max; i++)
+		cache_set(c, i, i);
+	fail_realloc_at = 0;
+	cache_set(c, max, max);
+	fail_realloc_at = -1;
+	CHECK_EQ_INT(c->nr_elems, max);
+	cache_free("setoom");
+}
+#endif /* CACHE_FAULT_INJECTION */
+
 int main(void)
 {
 	TEST_SUITE_BEGIN("cache");
@@ -172,5 +273,12 @@ int main(void)
 	RUN_TEST(test_get_small);
 	RUN_TEST(test_sort_and_recent);
 	RUN_TEST(test_free_middle);
+#ifdef CACHE_FAULT_INJECTION
+	RUN_TEST(test_alloc_oom_struct);
+	RUN_TEST(test_alloc_oom_name);
+	RUN_TEST(test_alloc_oom_elems);
+	RUN_TEST(test_alloc_oom_array);
+	RUN_TEST(test_set_oom_grow);
+#endif
 	TEST_SUITE_END();
 }

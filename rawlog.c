@@ -67,13 +67,13 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 
 	off_t off = elem->off;
 	ssize_t len = pread(fd, &rr, sizeof(rr), off);
-	if (len < sizeof(rr))
+	if (len < (ssize_t)sizeof(rr))
 		goto close_fd;
 
 	off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	while (1) {
 		len = pread(fd, &rr, sizeof(rr), off);
-		if (len < sizeof(rr))
+		if (len < (ssize_t)sizeof(rr))
 			break;
 
 		cache_set(cache, rr.curtime, off);
@@ -134,7 +134,7 @@ static int rawlog_parse_one(const char *path)
 
 	/* 1, read rawheader */
 	len = read(fd, &rh, sizeof(rh));
-	if (len < sizeof(rh)) {
+	if (len < (ssize_t)sizeof(rh)) {
 		log_err("%s: \"%s\" is not atop rawlog file\n", __func__, path);
 		ret = -EINVAL;
 		goto close_fd;
@@ -163,7 +163,7 @@ static int rawlog_parse_one(const char *path)
 	}
 	while (1) {
 		len = pread(fd, &rr, sizeof(rr), off);
-		if (len < sizeof(rr))
+		if (len < (ssize_t)sizeof(rr))
 			break;
 
 		cache_set(cache, rr.curtime, off);

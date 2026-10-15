@@ -55,7 +55,8 @@ echo ">> linking instrumented atophttpd"
 $CC --coverage -o atophttpd $OBJS $LDLIBS
 
 echo ">> building unit tests"
-$CC $CFLAGS tests/unit/test_cache.c      cache.o                          -o tests/unit/test_cache      $LDLIBS
+$CC $CFLAGS -DCACHE_FAULT_INJECTION -Wl,--wrap=calloc,--wrap=realloc,--wrap=strdup \
+	tests/unit/test_cache.c      cache.o                          -o tests/unit/test_cache      $LDLIBS
 $CC $CFLAGS tests/unit/test_output.c     output.o                         -o tests/unit/test_output     $LDLIBS
 $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                      -o tests/unit/test_http_args  $LDLIBS
 $CC $CFLAGS tests/unit/test_connection.c connection.o socket.o tls.o log.o -o tests/unit/test_connection $LDLIBS

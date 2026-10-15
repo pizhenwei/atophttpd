@@ -22,7 +22,9 @@ unit: $(UNIT_BINS)
 	@rc=0; for t in $(UNIT_BINS); do echo "--- $$t ---"; ./$$t || rc=1; done; exit $$rc
 
 unit/test_cache: unit/test_cache.c $(ROOT)/cache.c
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
+	$(CC) $(CFLAGS) -DCACHE_FAULT_INJECTION \
+		-Wl,--wrap=calloc,--wrap=realloc,--wrap=strdup \
+		$^ -o $@ $(LDLIBS)
 
 unit/test_output: unit/test_output.c $(ROOT)/output.c
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)

@@ -53,28 +53,43 @@ struct cache_t *cache_find(const char *name)
 struct cache_t *cache_alloc(const char *name)
 {
 	struct cache_t *cache = cache_find(name);
+	struct cache_t **grown;
 
 	assert(!cache);
 
 	cache = calloc(1, sizeof(*cache));
-	assert(cache);
+	if (!cache)
+		return NULL;
 
 	cache->name = strdup(name);
-	assert(cache->name);
+	if (!cache->name)
+		goto err_cache;
 
 	cache->nr_elems = 0;
 	cache->max_elems = RECORDS_TRUNK;
 	cache->elems = calloc(cache->max_elems, sizeof(struct cache_elem_t));
-	assert(cache->elems);
+	if (!cache->elems)
+		goto err_name;
 
 	if (!caches)
-		caches = calloc(1, sizeof(struct cache_t *));
+		grown = calloc(1, sizeof(struct cache_t *));
 	else
-		caches = realloc(caches, sizeof(struct cache_t *) * (nr_caches + 1));
+		grown = realloc(caches, sizeof(struct cache_t *) * (nr_caches + 1));
+	if (!grown)
+		goto err_elems;
+	caches = grown;
 
 	caches[nr_caches++] = cache;
 
 	return cache;
+
+err_elems:
+	free(cache->elems);
+err_name:
+	free(cache->name);
+err_cache:
+	free(cache);
+	return NULL;
 }
 
 void cache_free(const char *name)
@@ -96,7 +111,15 @@ void cache_free(const char *name)
 	}
 
 	nr_caches--;
-	caches = realloc(caches, sizeof(struct cache_t *) * (nr_caches));
+	if (!nr_caches) {
+		free(caches);
+		caches = NULL;
+	} else {
+		struct cache_t **shrunk =
+			realloc(caches, sizeof(struct cache_t *) * nr_caches);
+		if (shrunk)
+			caches = shrunk;
+	}
 }
 
 static struct cache_t *__cache_get(time_t time)
@@ -161,8 +184,13 @@ static int cache_elems_cmp(const void *p1, const void *p2)
 void cache_set(struct cache_t *cache, time_t time, off_t off)
 {
 	if (cache->nr_elems == cache->max_elems) {
-		cache->max_elems += RECORDS_TRUNK;
-		cache->elems = realloc(cache->elems, sizeof(struct cache_elem_t) * cache->max_elems);
+		int new_max = cache->max_elems + RECORDS_TRUNK;
+		struct cache_elem_t *grown =
+			realloc(cache->elems, sizeof(struct cache_elem_t) * new_max);
+		if (!grown)
+			return;
+		cache->elems = grown;
+		cache->max_elems = new_max;
 	}
 
 	struct cache_elem_t *new_elem = &cache->elems[cache->nr_elems++];
