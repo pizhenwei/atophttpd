@@ -32,6 +32,7 @@
 #include "httpd.h"
 #include "http_args.h"
 #include "output.h"
+#include "log.h"
 
 #include "version.h"
 
@@ -84,7 +85,7 @@ static char *http_content_type_deflate = "Content-Encoding: deflate\r\n";
 static char *http_generic = "Server: atop\r\n"
 "%s"	/* for http_content_type_XXX */
 "Content-Type: %s; charset=utf-8\r\n"
-"Content-Length: %d\r\n\r\n";
+"Content-Length: %zu\r\n\r\n";
 
 /* HTTP content types */
 static char *http_content_type_html = "text/html";
@@ -98,20 +99,20 @@ static int http_prepare_response(connection *conn)
 	int ret;
 	ret = setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
 	if (ret) {
-		printf("failed to set socket to TCP_NODELAY\n");
+		log_warn("failed to set socket to TCP_NODELAY\n");
 		return ret;
 	}
 
 	ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) & ~O_NONBLOCK);
 	if (ret) {
-		printf("failed to set conn to blocking\n");
+		log_warn("failed to set conn to blocking\n");
 		return ret;
 	}
 
 	struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
 	ret = setsockopt(conn->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	if (ret) {
-		printf("failed to set socket to SNDTIMEO\n");
+		log_warn("failed to set socket to SNDTIMEO\n");
 		return ret;
 	}
 
@@ -122,7 +123,7 @@ static void http_response_200(connection *conn, char *buf, size_t len, char *enc
 {
 	struct iovec iovs[3], *iov;
 	int ret;
-	char content[128] = {0};
+	char content[256] = {0};
 	int content_length = 0;
 
 	ret = http_prepare_response(conn);
@@ -138,7 +139,11 @@ static void http_response_200(connection *conn, char *buf, size_t len, char *enc
 	/* 2, http generic content */
 	iov = &iovs[1];
 
-	content_length = sprintf(content, http_generic, encoding, content_type, len);
+	content_length = snprintf(content, sizeof(content), http_generic, encoding, content_type, len);
+	if (content_length < 0 || content_length >= (int)sizeof(content)) {
+		log_err("response header too large, dropping request\n");
+		goto closeconn;
+	}
 	iov->iov_base = content;
 	iov->iov_len = content_length;
 
@@ -183,6 +188,12 @@ static void http_showsamp(char *req, connection *conn)
 
 	if (http_arg_long(req, "timestamp", &timestamp) < 0) {
 		char *err = "missing timestamp\r\n";
+		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
+		return;
+	}
+
+	if (timestamp <= 0) {
+		char *err = "invalid timestamp\r\n";
 		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
 	}
@@ -399,11 +410,10 @@ static void httpd_handle_request(connection *conn) {
 	char httpreq[URL_LEN] = {0};
 	time_t timeout = httpd_now_ms() + 100;
 	int ret;
-	char *httpver;
 
 	ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
 	if (ret) {
-		printf("failed to set conn to non_blocking");
+		log_warn("failed to set conn to non-blocking\n");
 		goto close_fd;
 	}
 
@@ -441,20 +451,43 @@ static void httpd_handle_request(connection *conn) {
 			goto close_fd;
 	}
 
-	/* support GET request only */
+	/*
+	 * Parse the request line "GET <uri> HTTP/1.1". Bound every lookup to the
+	 * first CRLF so nothing reads into the body, and locate the version via
+	 * the space just before it (a query string that itself contains the token
+	 * "HTTP/1.1" must not fool the parser).
+	 */
+	char *eol = strstr(inbuf, "\r\n");
+	if (!eol)
+		goto close_fd;
+
+	/* method: GET only */
 	if (strncmp("GET ", inbuf, 4))
 		goto close_fd;
 
-	/* support HTTP 1.1 request only */
-	httpver = strstr(inbuf, "HTTP/1.1");
-	if (!httpver)
+	char *uri = inbuf + 4;                     /* just after "GET " */
+	char *sp = memchr(uri, ' ', eol - uri);    /* space before the version */
+	if (!sp)
 		goto close_fd;
 
-	/* Ex, GET /hello HTTP/1.1 */
-	if ((httpver - inbuf >= URL_LEN + 6) || (httpver - inbuf < 6))
+	/* version: HTTP/1.1 only */
+	if (strncmp(sp + 1, "HTTP/1.1", 8))
 		goto close_fd;
 
-	memcpy(httpreq, inbuf + 5, httpver - inbuf - 6);
+	/*
+	 * The URI must be absolute; drop the leading '/' so it matches the
+	 * routing table, which compares against bare names ("ping", "help", ...).
+	 */
+	if (*uri != '/')
+		goto close_fd;
+	uri++;
+
+	size_t urilen = (size_t)(sp - uri);
+	if (urilen >= URL_LEN)
+		goto close_fd;
+
+	memcpy(httpreq, uri, urilen);
+	httpreq[urilen] = '\0';
 	http_process_request(httpreq, conn);
 
 close_fd:
@@ -471,7 +504,7 @@ static void httpd_update_cache(char *log_path)
 		return;
 
 	if (rawlog_parse_all(log_path)) {
-		printf("%s: rawlog parse failed\n", __func__);
+		log_warn("%s: rawlog parse failed\n", __func__);
 	}
 
 	update = now;
@@ -487,7 +520,7 @@ static void *httpd_routine(connection **listeners, char *log_path)
 
 	epollfd = epoll_create1(0);
 	if (epollfd < 0) {
-		printf("Failed create epollfd\n");
+		log_err("Failed create epollfd\n");
 		exit(1);
 	}
 
@@ -499,25 +532,25 @@ static void *httpd_routine(connection **listeners, char *log_path)
 
 		ret = conn_listen(listener);
 		if (ret < 0) {
-			printf("ConnectionType %s failed listening on port %u, aborting.\n", listener->type->get_type(NULL), listener->port);
+			log_err("ConnectionType %s failed listening on port %u, aborting.\n", listener->type->get_type(NULL), listener->port);
 			exit(1);
 		}
 
 		event.events = EPOLLIN;
 		event.data.ptr = listener;
 		if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listener->fd, &event)) {
-			printf("Add listener into epoll failed\n");
+			log_err("Add listener into epoll failed\n");
 			exit(1);
 		}
 		nr_listener++;
 	}
 
 	if (nr_listener == 0) {
-		printf("Listen Nothing, Exit.\n");
+		log_err("Listen Nothing, Exit.\n");
 		exit(1);
 	}
 
-	printf("Ready to serve\n");
+	log_info("Ready to serve\n");
 	while (!httpd_stop) {
 		ret = epoll_wait(epollfd, &event, 1, 1000);
 		if (!ret) {
@@ -528,7 +561,7 @@ static void *httpd_routine(connection **listeners, char *log_path)
 			if (errno == EINTR) {
 				continue;
 			} else {
-				printf("Error in epoll_wait %m\n");
+				log_err("Error in epoll_wait %m\n");
 				exit(1);
 			}
 		}
@@ -570,7 +603,7 @@ static int httpd(struct atophttd_context ctx)
 	if (ctx.port > 0) {
 		conn_index = get_conntype_index_by_name(CONN_TYPE_SOCKET);
 		if (conn_index < 0) {
-			printf("Failed finding connectin listener of %s\n", CONN_TYPE_SOCKET);
+			log_err("Failed finding connection listener of %s\n", CONN_TYPE_SOCKET);
 			exit(1);
 		}
 		listener = conn_create(get_conntype_by_name(CONN_TYPE_SOCKET), ctx.port, ctx.addr);
@@ -586,15 +619,17 @@ static int httpd(struct atophttd_context ctx)
 
 		ret = conn_configure(get_conntype_by_name(CONN_TYPE_TLS), &ctx.tls_ctx_config, 1);
 		if (ret < 0) {
-			printf("Failed to configure TLS\n");
+			log_err("Failed to configure TLS\n");
 			exit(1);
 		}
 
 		ctx.listeners[conn_index] = listener;
 	}
 
-        if (ctx.daemonmode)
-                daemon(0, 0);
+	if (ctx.daemonmode && daemon(0, 0)) {
+		log_err("failed to daemonize: %m\n");
+		exit(1);
+	}
 
 	httpd_routine(ctx.listeners, ctx.log_path);
 	return 0;
@@ -705,23 +740,23 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	log_open(config.daemonmode);
+
 	pagesize = sysconf(_SC_PAGESIZE);
 	hertz = sysconf(_SC_CLK_TCK);
 	uname(&utsname);
 
 	if (config.log_path == NULL) {
-		printf("%s: log path is nil\n", __func__);
+		log_err("%s: log path is nil\n", __func__);
 		return -1;
 	}
 
 	if (rawlog_parse_all(config.log_path)) {
-		printf("%s: rawlog parse failed\n", __func__);
+		log_err("%s: rawlog parse failed\n", __func__);
 		return -1;
 	}
 
-	log_debug("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
-
-	printf("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
+	log_info("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
 	conntype_initialize();
 	rc = httpd(config);
 

@@ -30,10 +30,10 @@ unit/test_output: unit/test_output.c $(ROOT)/output.c
 unit/test_http_args: unit/test_http_args.c $(ROOT)/http_args.c
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
-unit/test_connection: unit/test_connection.c $(ROOT)/connection.c $(ROOT)/socket.c $(ROOT)/tls.c
+unit/test_connection: unit/test_connection.c $(ROOT)/connection.c $(ROOT)/socket.c $(ROOT)/tls.c $(ROOT)/log.c
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
-unit/test_rawlog: unit/test_rawlog.c $(ROOT)/rawlog.c $(ROOT)/cache.c $(ROOT)/json.c $(ROOT)/output.c $(ROOT)/version.o
+unit/test_rawlog: unit/test_rawlog.c $(ROOT)/rawlog.c $(ROOT)/cache.c $(ROOT)/json.c $(ROOT)/output.c $(ROOT)/log.c $(ROOT)/version.o
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 unit/test_json: unit/test_json.c $(ROOT)/json.c $(ROOT)/output.c $(ROOT)/version.o

@@ -13,12 +13,14 @@
 #include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include "assert.h"
 #include "connection.h"
+#include "log.h"
 
 static connection_type* conn_types[CONN_TYPE_MAX];
 
@@ -40,7 +42,7 @@ int conntype_register(connection_type* ct) {
 
 		/* ignore case, we really don't care "tls"/"TLS" */
 		if (!strcasecmp(typename, tmpct->get_type(NULL))) {
-			printf("Connection types %s already registered\n", typename);
+			log_err("Connection types %s already registered\n", typename);
 			return -errno;
 		}
 	}
@@ -54,7 +56,7 @@ int conntype_register(connection_type* ct) {
 		ct->init();
 	}
 
-	printf("Connection type %s registered\n", typename);
+	log_info("Connection type %s registered\n", typename);
 	return -errno;
 }
 
@@ -70,7 +72,7 @@ connection_type* get_conntype_by_name(const char* typename) {
 			return ct;
 	}
 
-	printf("Missing implement of connection type %s\n", typename);
+	log_err("Missing implement of connection type %s\n", typename);
 
 	return NULL;
 }
@@ -86,7 +88,7 @@ int get_conntype_index_by_name(const char* typename) {
 			return type;
 	}
 
-	printf("Missing implement of connection type %s. Please re-compile atophttpd.\n", typename);
+	log_err("Missing implement of connection type %s. Please re-compile atophttpd.\n", typename);
 
 	return -1;
 }
@@ -111,7 +113,7 @@ int listen_to_port(int port, char* bindaddr, int af) {
 
 	ret = getaddrinfo(bindaddr, _port, &hints, &res);
 	if (ret != 0) {
-		perror("failed get addr info: ");
+		log_err("failed to get addr info: %s\n", strerror(errno));
 		/* res is left unset on failure; nothing to free */
 		return -1;
 	}
@@ -119,24 +121,24 @@ int listen_to_port(int port, char* bindaddr, int af) {
 	for (p = res; p != NULL; p = p->ai_next) {
 		sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 		if (sockfd == -1) {
-			perror("failed get socket fd: ");
+			log_err("failed to get socket fd: %s\n", strerror(errno));
 			continue;
 		}
 
 		ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
 		if (ret < 0) {
-			perror("socket set REUSEADDR failed: ");
+			log_err("socket set REUSEADDR failed: %s\n", strerror(errno));
 			goto error;
 		}
 		ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, (const char*)&reuse, sizeof(reuse));
 		if (ret < 0) {
-			perror("socket set REUSEPORT failed: ");
+			log_err("socket set REUSEPORT failed: %s\n", strerror(errno));
 			goto error;
 		}
 
 		ret = bind(sockfd, p->ai_addr, p->ai_addrlen);
 		if (ret == -1) {
-			perror("socket bind failed: ");
+			log_err("socket bind failed: %s\n", strerror(errno));
 			close(sockfd);
 			sockfd = -1;
 			continue;
@@ -144,7 +146,7 @@ int listen_to_port(int port, char* bindaddr, int af) {
 
 		ret = listen(sockfd, 128);
 		if (ret == -1) {
-			perror("socket listen failed: ");
+			log_err("socket listen failed: %s\n", strerror(errno));
 			close(sockfd);
 			sockfd = -1;
 			continue;

@@ -29,6 +29,7 @@
 #include "cache.h"
 #include "httpd.h"
 #include "json.h"
+#include "log.h"
 #include "rawlog.h"
 
 /* a little tricky: implemented in atop/version.c */
@@ -60,7 +61,7 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 
 	int fd = open(cache->name, O_RDONLY);
 	if (fd < 0) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, cache->name);
 		return -errno;
 	}
 
@@ -85,7 +86,7 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 	struct stat statbuf;
 	ret = fstat(fd, &statbuf);
 	if (ret < 0) {
-		printf("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
 		ret = -errno;
 		goto close_fd;
 	}
@@ -114,7 +115,7 @@ static int rawlog_parse_one(const char *path)
 	if (cache) {
 		ret = stat(path, &statbuf);
 		if (ret < 0) {
-			printf("%s: stat \"%s\" failed: %m\n", __func__, path);
+			log_err("%s: stat \"%s\" failed: %m\n", __func__, path);
 			return -errno;
 		}
 
@@ -127,21 +128,21 @@ static int rawlog_parse_one(const char *path)
 
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, path);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, path);
 		return -errno;
 	}
 
 	/* 1, read rawheader */
 	len = read(fd, &rh, sizeof(rh));
 	if (len < sizeof(rh)) {
-		printf("%s: \"%s\" is not atop rawlog file\n", __func__, path);
+		log_err("%s: \"%s\" is not atop rawlog file\n", __func__, path);
 		ret = -EINVAL;
 		goto close_fd;
 	}
 
 	ret = rawlog_verify_rawheader(&rh);
 	if (ret) {
-		printf("%s: \"%s\" verify rawheader failed\n", __func__, path);
+		log_err("%s: \"%s\" verify rawheader failed\n", __func__, path);
 		goto close_fd;
 	}
 
@@ -156,7 +157,7 @@ static int rawlog_parse_one(const char *path)
 	/* 3, read all rawrecords, cache time&off mapping */
 	off = lseek(fd, 0, SEEK_CUR);
 	if (off < 0) {
-		printf("%s: move offset failed\n", __func__);
+		log_err("%s: move offset failed\n", __func__);
 		ret = -errno;
 		goto close_fd;
 	}
@@ -172,7 +173,7 @@ static int rawlog_parse_one(const char *path)
 	/* 4, update rawlog size & st_mtim */
 	ret = fstat(fd, &statbuf);
 	if (ret < 0) {
-		printf("%s: fstat \"%s\" failed", __func__, path);
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, path);
 		ret = -errno;
 		goto close_fd;
 	}
@@ -203,7 +204,7 @@ int rawlog_parse_all(const char *path)
 	char name[PATH_MAX] = {0};
 
 	if (!dir) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, path);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, path);
 		return -errno;
 	}
 
@@ -211,8 +212,9 @@ int rawlog_parse_all(const char *path)
 		if (dirent->d_type != DT_REG)
 			continue;
 
-		sprintf(name, "%s/%s", path, dirent->d_name);
-		rawlog_parse_one(name);
+		/* skip entries whose full path would not fit (prevents overflow) */
+		if (snprintf(name, sizeof(name), "%s/%s", path, dirent->d_name) < (int)sizeof(name))
+			rawlog_parse_one(name);
 	}
 
 	cache_sort();
@@ -397,21 +399,21 @@ found:
 
 	fd = open(cache->name, O_RDONLY);
 	if (fd < 0) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, cache->name);
 		ret = -errno;
 		goto free_sstat;
 	}
 
 	ret = lseek(fd, off, SEEK_CUR);
 	if (ret < 0) {
-		printf("%s: move offset failed\n", __func__);
+		log_err("%s: move offset failed\n", __func__);
 		ret = -errno;
 		goto close_fd;
 	}
 
 	len = read(fd, &rr, sizeof(rr));
 	if (len != sizeof(rr)) {
-		printf("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, cache->name);
 		ret = -EIO;
 		goto close_fd;
 	}
@@ -419,13 +421,13 @@ found:
 
 	ret = rawlog_get_sstat(fd, sstat, rr.scomplen);
 	if (ret) {
-		printf("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, cache->name);
 		goto close_fd;
 	}
 
 	ret = rawlog_get_devtstat(fd, &devtstat, &rr);
 	if (ret) {
-		printf("%s: time %ld, off %ld in %s, get devtstat failed\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, get devtstat failed\n", __func__, ts, off, cache->name);
 		goto close_fd;
 	}
 

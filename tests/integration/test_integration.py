@@ -406,7 +406,8 @@ class CliTests(unittest.TestCase):
     def test_bad_log_path(self):
         p = self._run(["-P", "/no/such/atop/log/dir"])
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("parse failed", p.stdout)
+        # start-up errors are logged via the logging layer, i.e. to stderr
+        self.assertIn("parse failed", p.stderr)
 
     def test_tls_port_without_tls_build(self):
         # requesting a TLS port in a non-TLS build must fail cleanly
@@ -425,13 +426,13 @@ class CliTests(unittest.TestCase):
         p = self._run(["-A", "::", "-C", "/x/ca", "-c", "/x/crt",
                        "-k", "/x/key", "-P", "/no/such/atop/log/dir"])
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("parse failed", p.stdout)
+        self.assertIn("parse failed", p.stderr)
 
     def test_listen_nothing(self):
         # port 0 and no TLS port -> nothing to listen on -> clean exit(1)
         p = self._run(["-p", "0", "-P", _log_dir])
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("Listen Nothing", p.stdout)
+        self.assertIn("Listen Nothing", p.stderr)
 
     def test_daemon_mode(self):
         # -d exercises the daemon() path; with nothing to listen on the

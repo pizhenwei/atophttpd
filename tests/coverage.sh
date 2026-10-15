@@ -19,8 +19,8 @@ CC="${CC:-gcc}"
 CFLAGS="-Iatop -I. -g -O0 -Wall -std=gnu11 --coverage"
 LDLIBS="-lz"
 
-MODULES="cache httpd json output rawlog connection socket tls http_args"
-OBJS="cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o http_args.o"
+MODULES="cache httpd json output rawlog connection socket tls http_args log"
+OBJS="cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o tls.o http_args.o log.o"
 
 echo ">> cleaning previous artefacts"
 make clean >/dev/null 2>&1 || true
@@ -58,8 +58,8 @@ echo ">> building unit tests"
 $CC $CFLAGS tests/unit/test_cache.c      cache.o                          -o tests/unit/test_cache      $LDLIBS
 $CC $CFLAGS tests/unit/test_output.c     output.o                         -o tests/unit/test_output     $LDLIBS
 $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                      -o tests/unit/test_http_args  $LDLIBS
-$CC $CFLAGS tests/unit/test_connection.c connection.o socket.o tls.o      -o tests/unit/test_connection $LDLIBS
-$CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o version.o -o tests/unit/test_rawlog $LDLIBS
+$CC $CFLAGS tests/unit/test_connection.c connection.o socket.o tls.o log.o -o tests/unit/test_connection $LDLIBS
+$CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o version.o -o tests/unit/test_rawlog $LDLIBS
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o         -o tests/unit/test_json      $LDLIBS
 
 echo ">> running unit tests"
