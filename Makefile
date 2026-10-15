@@ -77,7 +77,13 @@ coverage:
 sanitize:
 	@bash tests/sanitize.sh
 
-.PHONY: all install deb bin submodule atop-bin unit integration check coverage sanitize clean
+# Build the libFuzzer harnesses (clang + ASan/UBSan) and run a short, bounded
+# session against the untrusted-input parsers. Override the per-target budget
+# with: make fuzz FUZZ_SECONDS=120 (or target a single one: make fuzz FUZZ=rawlog).
+fuzz:
+	@bash tests/fuzz.sh $(or $(FUZZ),all) $(or $(FUZZ_SECONDS),30)
+
+.PHONY: all install deb bin submodule atop-bin unit integration check coverage sanitize fuzz clean
 
 clean:
 	@rm -f $(BIN) *.o *.deb *.gcda *.gcno coverage.info

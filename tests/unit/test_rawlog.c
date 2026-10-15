@@ -9,6 +9,7 @@
  */
 
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -257,6 +258,71 @@ static void test_parse_bad_magic(void)
 	check_header_variant(corrupt_magic);
 }
 
+/*
+ * Copy the sample raw-log into a fresh directory, overwrite a 32-bit field in
+ * its first record, then confirm the parser and record decoder reject the
+ * record gracefully (negative return, no crash) instead of trusting an
+ * attacker-controlled length or count to size an allocation.
+ */
+static void check_corrupt_first_record(size_t field_off, unsigned int value)
+{
+	int in = open_sample_ro();
+	if (in < 0) {
+		printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
+		return;
+	}
+
+	/* Drop every cache built by earlier tests: cache_get() looks up records
+	 * by time range across all files, and the corrupt record's timestamps
+	 * overlap the valid sample's, so a stale cache would otherwise serve a
+	 * good record and hide the rejection we want to verify. */
+	struct cache_t *stale;
+	while ((stale = cache_get_recent()) != NULL)
+		cache_free(stale->name);
+
+	static unsigned char buf[1 << 20];
+	ssize_t n = read(in, buf, sizeof(buf));
+	close(in);
+	if (n < (ssize_t)(sizeof(struct rawheader) + sizeof(struct rawrecord)))
+		return;
+
+	memcpy(buf + sizeof(struct rawheader) + field_off, &value, sizeof(value));
+
+	char dir[256];
+	tf_tmpl(dir, sizeof(dir), "atophttpd_corrupt_XXXXXX");
+	CHECK(mkdtemp(dir) != NULL);
+	char path[512];
+	snprintf(path, sizeof(path), "%s/atop_corrupt", dir);
+	int out = open(path, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+	CHECK(out >= 0);
+	if (out >= 0) {
+		ssize_t w = write(out, buf, n);
+		(void)w;
+		close(out);
+	}
+
+	CHECK_EQ_INT(rawlog_parse_all(dir), 0);
+	const struct cache_t *c = cache_find(path);
+	CHECK(c != NULL);
+	if (c && c->nr_elems) {
+		char labels[] = "CPU";
+		int ret = rawlog_get_record(c->elems[0].time, labels, NULL);
+		CHECK(ret < 0); /* rejected, not crashed */
+	}
+}
+
+/* A record whose declared compressed length runs past EOF must be rejected. */
+static void test_record_huge_scomplen(void)
+{
+	check_corrupt_first_record(offsetof(struct rawrecord, scomplen), 0xfffffff0u);
+}
+
+/* A record claiming more processes than tasks must be rejected. */
+static void test_record_huge_totproc(void)
+{
+	check_corrupt_first_record(offsetof(struct rawrecord, totproc), 0xfffffff0u);
+}
+
 int main(void)
 {
 	uname(&utsname);
@@ -269,5 +335,7 @@ int main(void)
 	RUN_TEST(test_parse_bad_headlen);
 	RUN_TEST(test_parse_bad_version);
 	RUN_TEST(test_parse_bad_magic);
+	RUN_TEST(test_record_huge_scomplen);
+	RUN_TEST(test_record_huge_totproc);
 	TEST_SUITE_END();
 }

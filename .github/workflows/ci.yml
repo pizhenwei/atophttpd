@@ -93,3 +93,33 @@ jobs:
 
       - name: Run unit + integration tests under ASan/UBSan
         run: make sanitize
+
+  # ---------------------------------------------------------------------------
+  # Short, bounded libFuzzer session against the two untrusted-input parsers
+  # (HTTP query string and atop binary raw-log), built with clang + ASan/UBSan.
+  # Any crash, memory error or OOM fails the job and uploads the reproducer.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz (short)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev python3
+
+      - name: Fuzz the parsers (30s each)
+        run: make fuzz FUZZ_SECONDS=30
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: fuzz/crashes
+          if-no-files-found: ignore

@@ -267,21 +267,34 @@ static int rawlog_get_devtstat(int fd, struct devtstat *devtstat, struct rawreco
 	int ret;
 	unsigned long ntaskall = 0, nprocall = 0, nprocactive = 0, ntaskactive = 0;
 
-	/* 1, allocate memory */
+	/* Reject implausible counts before they size any allocation: a sample
+	 * holds at most ndeviat tasks, so it cannot contain more processes
+	 * (totproc) or active processes (nactproc) than that, and zlib cannot
+	 * expand the compressed task blob by more than ~1032x, so it cannot
+	 * decompress to more tstats than that ratio allows. With pcomplen already
+	 * bounded to the file size by the caller, this bounds every allocation
+	 * below (and the process pointer arrays are sized by ndeviat so the fill
+	 * loop can never overrun them). */
+	if (rr->totproc > rr->ndeviat || rr->nactproc > rr->ndeviat ||
+	    outlen > (unsigned long)rr->pcomplen * 1032 + sizeof(struct tstat))
+		return -EINVAL;
+
+	/* 1, allocate memory (taskall is calloc'd so a short decompression
+	 * cannot leave the fill loop reading indeterminate task flags) */
 	memset(devtstat, 0x00, sizeof(struct devtstat));
-	devtstat->taskall = malloc(outlen);
+	devtstat->taskall = calloc(rr->ndeviat, sizeof(struct tstat));
 	if (!devtstat->taskall) {
 		ret = -ENOMEM;
 		goto free_devtstat;
 	}
 
-	devtstat->procall = malloc(sizeof(struct tstat*) * rr->totproc);
+	devtstat->procall = malloc(sizeof(struct tstat*) * rr->ndeviat);
 	if (!devtstat->procall) {
 		ret = -ENOMEM;
 		goto free_devtstat;
 	}
 
-	devtstat->procactive = malloc(sizeof(struct tstat*) * rr->nactproc);
+	devtstat->procactive = malloc(sizeof(struct tstat*) * rr->ndeviat);
 	if (!devtstat->procactive) {
 		ret = -ENOMEM;
 		goto free_devtstat;
@@ -418,6 +431,26 @@ found:
 		goto close_fd;
 	}
 	log_debug("time %ld, off %ld in %s, rr.curtime %ld\n", ts, off, cache->name, rr.curtime);
+
+	/* The record's compressed blobs must physically fit within the file.
+	 * Reject lengths that run past EOF before they are used to size any
+	 * allocation -- this stops a corrupt or malicious raw-log from driving
+	 * an unbounded malloc() in the decompression path below. */
+	struct stat rrst;
+	if (fstat(fd, &rrst) < 0) {
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
+		ret = -errno;
+		goto close_fd;
+	}
+	off_t body = off + (off_t)sizeof(rr);
+	unsigned long bloblen = (unsigned long)rr.scomplen + rr.pcomplen +
+	                        rr.ccomplen + rr.icomplen;
+	if (body > rrst.st_size || bloblen > (unsigned long)(rrst.st_size - body)) {
+		log_err("%s: time %ld, off %ld in %s, record exceeds file bounds\n",
+			__func__, ts, off, cache->name);
+		ret = -EINVAL;
+		goto close_fd;
+	}
 
 	ret = rawlog_get_sstat(fd, sstat, rr.scomplen);
 	if (ret) {
