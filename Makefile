@@ -73,7 +73,11 @@ check: unit integration
 coverage:
 	@bash tests/coverage.sh $(or $(COV),90)
 
-.PHONY: all install deb bin submodule atop-bin unit integration check coverage clean
+# Build + run the whole suite under AddressSanitizer and UBSan.
+sanitize:
+	@bash tests/sanitize.sh
+
+.PHONY: all install deb bin submodule atop-bin unit integration check coverage sanitize clean
 
 clean:
 	@rm -f $(BIN) *.o *.deb *.gcda *.gcno coverage.info

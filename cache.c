@@ -171,6 +171,11 @@ static int cache_cmp(const void *p1, const void *p2)
 
 void cache_sort()
 {
+	/* qsort() is declared nonnull: skip it when there is nothing to sort
+	 * (caches is NULL while no cache has been allocated yet). */
+	if (nr_caches < 2)
+		return;
+
 	qsort(caches, nr_caches, sizeof(struct cache_t *), cache_cmp);
 }
 

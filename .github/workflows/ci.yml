@@ -72,3 +72,24 @@ jobs:
           name: coverage-info
           path: coverage.info
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Unit + integration tests under AddressSanitizer and UBSan. Catches memory
+  # errors and undefined behaviour in the HTTP and raw-log parsers.
+  # ---------------------------------------------------------------------------
+  sanitizers:
+    name: tests (asan + ubsan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev python3
+
+      - name: Run unit + integration tests under ASan/UBSan
+        run: make sanitize
