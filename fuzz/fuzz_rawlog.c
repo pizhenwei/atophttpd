@@ -46,7 +46,6 @@ unsigned int pagesize = 4096;
 unsigned short hertz = 100;
 struct utsname utsname;
 int hidecmdline = 0;
-struct output defop = { .output_type = OUTPUT_BUF, .done = NULL };
 
 static char tmppath[] = "/tmp/atophttpd_fuzz_rawlog_XXXXXX";
 
@@ -75,12 +74,18 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 		if (c && c->nr_elems) {
 			char labels[] = "CPU,MEM,DSK,NET";
 			char buf[sizeof(labels)];
+			struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
 
 			memcpy(buf, labels, sizeof(labels));
-			rawlog_get_record(c->elems[0].time, buf, NULL);
+			rawlog_get_record(c->elems[0].time, buf, NULL, &op);
+			free(op.ob.buf);
+			op.ob.buf = NULL;
+			op.ob.size = 0;
+			op.ob.offset = 0;
 
 			memcpy(buf, labels, sizeof(labels));
-			rawlog_get_record(c->elems[c->nr_elems - 1].time, buf, NULL);
+			rawlog_get_record(c->elems[c->nr_elems - 1].time, buf, NULL, &op);
+			free(op.ob.buf);
 		}
 	}
 

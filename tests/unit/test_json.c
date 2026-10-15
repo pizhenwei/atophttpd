@@ -34,7 +34,7 @@
  * from tests/unit/ the include search order would pick up the wrong one.
  */
 int jsonout(int, char *, time_t, int, struct devtstat *, struct sstat *,
-            int, unsigned int, char, connection *);
+            int, unsigned int, char, connection *, struct output *);
 
 /* globals normally provided by httpd.c */
 int __debug = 0;
@@ -42,7 +42,6 @@ unsigned int pagesize = 4096;
 unsigned short hertz = 100;
 struct utsname utsname;
 int hidecmdline = 0;
-struct output defop = { .output_type = OUTPUT_BUF, .done = NULL };
 
 /* NETATOP / GPUSTAT live in atop.h and gate the PRN / PRE printers. */
 
@@ -224,7 +223,8 @@ static void run_json_tc(const struct json_tc *tc)
 	snprintf(labels, sizeof(labels), "%s", tc->labels);
 
 	hidecmdline = tc->hidecmd;
-	int ret = jsonout(tc->flags, labels, tc->ts, 1, dt, ss, 0, 0, 0, NULL);
+	struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
+	int ret = jsonout(tc->flags, labels, tc->ts, 1, dt, ss, 0, 0, 0, NULL, &op);
 	hidecmdline = 0;
 
 	if (tc->expect_ok)
@@ -233,7 +233,9 @@ static void run_json_tc(const struct json_tc *tc)
 		CHECK(ret != 0);
 
 	if (tc->check_offset)
-		CHECK_EQ_INT(defop.ob.offset, 0);
+		CHECK_EQ_INT(op.ob.offset, 0);
+
+	free(op.ob.buf);
 }
 
 /* The "ALL" label set with PRN + PRE enabled: exercises every printer. */

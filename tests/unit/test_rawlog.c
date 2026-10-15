@@ -26,7 +26,7 @@
 #include "rawlog.h"
 
 int rawlog_parse_all(const char *path);
-int rawlog_get_record(time_t ts, char *labels, void *conn);
+int rawlog_get_record(time_t ts, char *labels, void *conn, struct output *op);
 
 /* globals normally provided by httpd.c */
 int __debug = 0;
@@ -34,7 +34,6 @@ unsigned int pagesize = 4096;
 unsigned short hertz = 100;
 struct utsname utsname;
 int hidecmdline = 0;
-struct output defop = { .output_type = OUTPUT_BUF, .done = NULL };
 
 static char tmpdir[256];
 
@@ -159,17 +158,23 @@ static void test_get_record(void)
 	}
 
 	char labels[32];
+	struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
 
-	/* a valid timestamp produces JSON output into defop */
+	/* a valid timestamp produces JSON output into op */
 	strcpy(labels, "CPU,MEM");
-	int ret = rawlog_get_record(first_sample_time, labels, NULL);
+	int ret = rawlog_get_record(first_sample_time, labels, NULL, &op);
 	CHECK_EQ_INT(ret, 0);
-	CHECK(defop.ob.offset == 0); /* reset by output_samp_done */
+	CHECK(op.ob.offset == 0); /* reset by output_samp_done */
+	free(op.ob.buf);
+	op.ob.buf = NULL;
+	op.ob.size = 0;
+	op.ob.offset = 0;
 
 	/* a far-future timestamp falls back to the most recent sample */
 	strcpy(labels, "CPU");
-	ret = rawlog_get_record(last_sample_time + 100000, labels, NULL);
+	ret = rawlog_get_record(last_sample_time + 100000, labels, NULL, &op);
 	CHECK_EQ_INT(ret, 0);
+	free(op.ob.buf);
 }
 
 /*
@@ -306,8 +311,10 @@ static void check_corrupt_first_record(size_t field_off, unsigned int value)
 	CHECK(c != NULL);
 	if (c && c->nr_elems) {
 		char labels[] = "CPU";
-		int ret = rawlog_get_record(c->elems[0].time, labels, NULL);
+		struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
+		int ret = rawlog_get_record(c->elems[0].time, labels, NULL, &op);
 		CHECK(ret < 0); /* rejected, not crashed */
+		free(op.ob.buf);
 	}
 }
 

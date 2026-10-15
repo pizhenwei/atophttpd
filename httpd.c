@@ -46,11 +46,6 @@
 
 static void http_show_samp_done(struct output *op, connection *conn);
 
-struct output defop = {
-	.output_type = OUTPUT_BUF,
-	.done = http_show_samp_done
-};
-
 static struct atophttd_context config = {
 	.port = DEFAULT_PORT,
         .daemonmode = 0,
@@ -204,24 +199,29 @@ static void http_showsamp(char *req, connection *conn)
 		return;
 	}
 
-	defop.encoding = http_content_type_deflate;
+	struct output op = {
+		.output_type = OUTPUT_BUF,
+		.done = http_show_samp_done,
+		.encoding = http_content_type_deflate,
+	};
 	if (http_arg_str(req, "encoding", encoding, sizeof(encoding)) == 0) {
 		if (!strcmp(encoding, "none")) {
-			defop.encoding = http_content_type_none;
+			op.encoding = http_content_type_none;
 		} else if (!strcmp(encoding, "deflate")) {
-			defop.encoding = http_content_type_deflate;
+			op.encoding = http_content_type_deflate;
 		} else {
 			char *err = "encoding supports none/deflate only\r\n";
 			http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
-			return;
+			return;   /* op.ob.buf is NULL here, nothing to free */
 		}
 	}
 
-	if (rawlog_get_record(timestamp, lables, conn) < 0) {
+	if (rawlog_get_record(timestamp, lables, conn, &op) < 0) {
 		char *err = "missing sample\r\n";
 		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
-		return;
 	}
+
+	free(op.ob.buf);
 }
 
 /* Import a binary file */
