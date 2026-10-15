@@ -77,13 +77,17 @@ coverage:
 sanitize:
 	@bash tests/sanitize.sh
 
+# Build + run the whole suite under ThreadSanitizer (concurrency race gate).
+tsan:
+	@bash tests/tsan.sh
+
 # Build the libFuzzer harnesses (clang + ASan/UBSan) and run a short, bounded
 # session against the untrusted-input parsers. Override the per-target budget
 # with: make fuzz FUZZ_SECONDS=120 (or target a single one: make fuzz FUZZ=rawlog).
 fuzz:
 	@bash tests/fuzz.sh $(or $(FUZZ),all) $(or $(FUZZ_SECONDS),30)
 
-.PHONY: all install deb bin submodule atop-bin unit integration check coverage sanitize fuzz clean
+.PHONY: all install deb bin submodule atop-bin unit integration check coverage sanitize tsan fuzz clean
 
 clean:
 	@rm -f $(BIN) *.o *.deb *.gcda *.gcno coverage.info

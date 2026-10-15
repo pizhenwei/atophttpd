@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for atophttpd.
+#
+# httpd_stop is a `volatile sig_atomic_t` set by the SIGTERM/SIGINT handler and
+# polled by the acceptor loop to request a clean shutdown. This is the standard
+# async-signal shutdown idiom and is safe, but TSan reports the handler write
+# racing with the loop read because it cannot reason about signal delivery.
+race:httpd_on_terminate

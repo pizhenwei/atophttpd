@@ -95,6 +95,28 @@ jobs:
         run: make sanitize
 
   # ---------------------------------------------------------------------------
+  # Unit + integration tests under ThreadSanitizer. Gates the concurrency work
+  # (worker pool, cache reader/writer lock, shared request-path state): any data
+  # race aborts the run. Mutually exclusive with ASan, hence a separate job.
+  # ---------------------------------------------------------------------------
+  threadsanitizer:
+    name: tests (tsan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev python3
+
+      - name: Run unit + integration tests under ThreadSanitizer
+        run: make tsan
+
+  # ---------------------------------------------------------------------------
   # Short, bounded libFuzzer session against the two untrusted-input parsers
   # (HTTP query string and atop binary raw-log), built with clang + ASan/UBSan.
   # Any crash, memory error or OOM fails the job and uploads the reproducer.

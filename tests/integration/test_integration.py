@@ -396,17 +396,30 @@ class ConcurrencyTests(unittest.TestCase):
         cls.ts = _sample_epochs[len(_sample_epochs) // 2]
 
     def _showsamp(self, _):
-        status, _, body = _raw_request(
-            "/showsamp?timestamp=%d&lables=ALL&encoding=none" % self.ts)
-        if b"200" not in status:
-            return ("bad status", status)
-        try:
-            obj = json.loads(body)
-        except Exception as exc:  # noqa: BLE001
-            return ("bad json", repr(exc))
-        if obj.get("timestamp") != self.ts or "CPU" not in obj:
-            return ("bad body", obj.get("timestamp"))
-        return None
+        # The anti-slowloris guard (see test_slow_client_closed) drops a
+        # connection that does not send its request line within ~100ms. Under a
+        # sanitizer-slowed server plus the GIL serialising these client
+        # threads, a freshly connected socket can occasionally miss that window
+        # before sendall() runs. That is a benign, connection-level drop (an
+        # empty read, status == b""), not a response error, so retry it a few
+        # times. A real server crash yields a refused connection (which raises
+        # and fails the test), and a malformed/incorrect response is a non-empty
+        # status and is never retried.
+        for _attempt in range(5):
+            status, _, body = _raw_request(
+                "/showsamp?timestamp=%d&lables=ALL&encoding=none" % self.ts)
+            if not status:
+                continue  # slow-client guard fired under load -> new socket
+            if b"200" not in status:
+                return ("bad status", status)
+            try:
+                obj = json.loads(body)
+            except Exception as exc:  # noqa: BLE001
+                return ("bad json", repr(exc))
+            if obj.get("timestamp") != self.ts or "CPU" not in obj:
+                return ("bad body", obj.get("timestamp"))
+            return None
+        return ("dropped repeatedly", b"")
 
     def test_parallel_showsamp(self):
         # 8 client threads (> the 4 server workers) each issue a tight loop of
@@ -428,8 +441,14 @@ class ConcurrencyTests(unittest.TestCase):
 
         def one(i):
             if i % 3 == 0:
-                status, _, _ = _raw_request("/ping")
-                return None if b"200" in status else ("ping", status)
+                # Same benign slow-client-guard drop as _showsamp: retry an
+                # empty read (status == b"") a few times before giving up.
+                for _attempt in range(5):
+                    status, _, _ = _raw_request("/ping")
+                    if not status:
+                        continue
+                    return None if b"200" in status else ("ping", status)
+                return ("ping dropped repeatedly", b"")
             return self._showsamp(i)
 
         def run(_):

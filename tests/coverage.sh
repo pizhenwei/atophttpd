@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 CC="${CC:-gcc}"
-CFLAGS="-Iatop -I. -g -O0 -Wall -std=gnu11 --coverage -pthread"
+CFLAGS="-Iatop -I. -g -O0 -Wall -std=gnu11 --coverage -fprofile-update=atomic -pthread"
 LDLIBS="-lz -pthread"
 
 MODULES="cache httpd json output rawlog connection socket tls http_args log"

@@ -9,6 +9,7 @@
  */
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -330,6 +331,132 @@ static void test_record_huge_totproc(void)
 	check_corrupt_first_record(offsetof(struct rawrecord, totproc), 0xfffffff0u);
 }
 
+/* ------------------------------------------------------------------ */
+/* Concurrency stress: many reader threads decode records (cache_rdlock)
+ * while a writer thread keeps adding new log files, each of which forces a
+ * cache_alloc (realloc of the global caches array) + cache_sort under
+ * cache_wrlock. This is the exact window the cache reader/writer lock must
+ * serialise: without it a reader iterating the caches array in __cache_get()
+ * would dereference freed/moved memory. Run under ASan it surfaces as a
+ * use-after-free; run under ThreadSanitizer it surfaces as a data race. */
+
+struct churn_ctx {
+	char dir[256];
+	time_t ts;
+	int stop;
+};
+
+static int copy_sample_to(const char *path)
+{
+	int in = open_sample_ro();
+	if (in < 0)
+		return 0;
+
+	int out = open(path, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+	if (out < 0) {
+		close(in);
+		return 0;
+	}
+
+	char buf[65536];
+	ssize_t n;
+	int ok = 1;
+	while ((n = read(in, buf, sizeof(buf))) > 0) {
+		if (write(out, buf, n) != n) {
+			ok = 0;
+			break;
+		}
+	}
+	close(in);
+	close(out);
+	return ok;
+}
+
+static void *churn_reader(void *arg)
+{
+	struct churn_ctx *c = arg;
+	const char labels[] = "CPU,MEM,DSK,NET";
+
+	while (!__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE)) {
+		char lb[sizeof(labels)];
+		memcpy(lb, labels, sizeof(labels));
+		struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
+		rawlog_get_record(c->ts, lb, NULL, &op);
+		free(op.ob.buf);
+	}
+
+	return NULL;
+}
+
+/*
+ * Number of fresh log files the writer adds (each forces a caches-array
+ * realloc + cache_sort under the write lock) and the reader-thread count.
+ * Kept deliberately modest so the test stays well within the ~15x time/memory
+ * overhead of ThreadSanitizer while still slamming enough realloc cycles
+ * against the readers to catch a missing/broken lock. */
+#define CHURN_WRITES  12
+#define CHURN_READERS 4
+
+static void *churn_writer(void *arg)
+{
+	struct churn_ctx *c = arg;
+
+	for (int i = 0; i < CHURN_WRITES; i++) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/atop_churn_%d", c->dir, i);
+		copy_sample_to(path);
+		rawlog_parse_all(c->dir);
+	}
+
+	__atomic_store_n(&c->stop, 1, __ATOMIC_RELEASE);
+	return NULL;
+}
+
+static void test_concurrent_cache_access(void)
+{
+	/* isolate from caches built by earlier tests */
+	struct cache_t *stale;
+	while ((stale = cache_get_recent()) != NULL)
+		cache_free(stale->name);
+
+	struct churn_ctx c = { .stop = 0 };
+	tf_tmpl(c.dir, sizeof(c.dir), "atophttpd_churn_XXXXXX");
+	if (!mkdtemp(c.dir)) {
+		CHECK(0);
+		return;
+	}
+
+	char base[512];
+	snprintf(base, sizeof(base), "%s/atop_base", c.dir);
+	if (!copy_sample_to(base)) {
+		printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
+		return;
+	}
+
+	CHECK_EQ_INT(rawlog_parse_all(c.dir), 0);
+	const struct cache_t *bc = cache_find(base);
+	CHECK(bc != NULL);
+	if (!bc || !bc->nr_elems)
+		return;
+	c.ts = bc->elems[0].time;
+
+	pthread_t readers[CHURN_READERS];
+	pthread_t writer;
+	int nr = 0;
+	for (int i = 0; i < CHURN_READERS; i++) {
+		if (pthread_create(&readers[i], NULL, churn_reader, &c) == 0)
+			nr++;
+	}
+	CHECK_EQ_INT(pthread_create(&writer, NULL, churn_writer, &c), 0);
+
+	pthread_join(writer, NULL);
+	for (int i = 0; i < nr; i++)
+		pthread_join(readers[i], NULL);
+
+	/* reaching here without a sanitizer abort means the lock held */
+	CHECK(nr > 0);
+}
+
 int main(void)
 {
 	uname(&utsname);
@@ -344,5 +471,6 @@ int main(void)
 	RUN_TEST(test_parse_bad_magic);
 	RUN_TEST(test_record_huge_scomplen);
 	RUN_TEST(test_record_huge_totproc);
+	RUN_TEST(test_concurrent_cache_access);
 	TEST_SUITE_END();
 }
