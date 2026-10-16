@@ -1,0 +1,16 @@
+# Configuration for atophttpd, sourced by the systemd service.
+# After editing, apply with: systemctl restart atophttpd
+
+# TCP port the HTTP service listens on.
+PORT=2867
+
+# Directory containing atop raw-log files (written by the atop daemon).
+LOGPATH=/var/log/atop
+
+# Extra command-line options passed to atophttpd (see atophttpd(1)).
+# Examples:
+#   ATOPHTTPD_OPTS="-a 0.0.0.0"          # listen on all interfaces
+#   ATOPHTTPD_OPTS="-t 2868 -C /etc/pki/CA/ca.crt \
+#                   -c /etc/pki/atophttpd/server.crt \
+#                   -k /etc/pki/atophttpd/server.key"   # TLS build only
+ATOPHTTPD_OPTS=""

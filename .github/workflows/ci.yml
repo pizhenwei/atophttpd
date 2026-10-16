@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Plain build sanity check, with and without the optional TLS backend.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (USE_TLS=${{ matrix.use_tls }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        use_tls: ["", "yes"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev libssl-dev \
+                                  pkg-config libglib2.0-dev
+
+      - name: Build atophttpd
+        run: make USE_TLS=${{ matrix.use_tls }}
+
+      - name: Build atop submodule (log generator)
+        run: make atop-bin
+
+  # ---------------------------------------------------------------------------
+  # Unit + integration tests with gcov coverage, gated at >= 90% line coverage.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: tests + coverage (>=90%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev lcov python3
+
+      - name: Build atophttpd (clean build check)
+        run: make
+
+      - name: Run unit + integration tests with coverage gate
+        run: make coverage COV=90
+
+      - name: Upload HTML coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/html
+          if-no-files-found: ignore
+
+      - name: Upload lcov report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-info
+          path: coverage.info
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Unit + integration tests under AddressSanitizer and UBSan. Catches memory
+  # errors and undefined behaviour in the HTTP and raw-log parsers.
+  # ---------------------------------------------------------------------------
+  sanitizers:
+    name: tests (asan + ubsan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev python3
+
+      - name: Run unit + integration tests under ASan/UBSan
+        run: make sanitize
+
+  # ---------------------------------------------------------------------------
+  # Unit + integration tests under ThreadSanitizer. Gates the concurrency work
+  # (worker pool, cache reader/writer lock, shared request-path state): any data
+  # race aborts the run. Mutually exclusive with ASan, hence a separate job.
+  # ---------------------------------------------------------------------------
+  threadsanitizer:
+    name: tests (tsan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev python3
+
+      - name: Run unit + integration tests under ThreadSanitizer
+        run: make tsan
+
+  # ---------------------------------------------------------------------------
+  # Short, bounded libFuzzer session against the two untrusted-input parsers
+  # (HTTP query string and atop binary raw-log), built with clang + ASan/UBSan.
+  # Any crash, memory error or OOM fails the job and uploads the reproducer.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz (short)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang build-essential zlib1g-dev libncursesw5-dev \
+                                  pkg-config libglib2.0-dev python3
+
+      - name: Fuzz the parsers (30s each)
+        run: make fuzz FUZZ_SECONDS=30
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: fuzz/crashes
+          if-no-files-found: ignore

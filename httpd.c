@@ -14,6 +14,7 @@
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,7 +31,9 @@
 #include <zlib.h>
 
 #include "httpd.h"
+#include "http_args.h"
 #include "output.h"
+#include "log.h"
 
 #include "version.h"
 
@@ -43,11 +46,6 @@
 #define DEFAULT_CA_FILE		"/etc/pki/CA/ca.crt"
 
 static void http_show_samp_done(struct output *op, connection *conn);
-
-struct output defop = {
-	.output_type = OUTPUT_BUF,
-	.done = http_show_samp_done
-};
 
 static struct atophttd_context config = {
 	.port = DEFAULT_PORT,
@@ -67,6 +65,7 @@ unsigned int pagesize;
 unsigned short hertz;
 struct utsname utsname;
 int hidecmdline = 0;
+static volatile sig_atomic_t httpd_stop = 0;
 
 #define INBUF_SIZE	4096
 #define URL_LEN		1024
@@ -82,7 +81,7 @@ static char *http_content_type_deflate = "Content-Encoding: deflate\r\n";
 static char *http_generic = "Server: atop\r\n"
 "%s"	/* for http_content_type_XXX */
 "Content-Type: %s; charset=utf-8\r\n"
-"Content-Length: %d\r\n\r\n";
+"Content-Length: %zu\r\n\r\n";
 
 /* HTTP content types */
 static char *http_content_type_html = "text/html";
@@ -96,20 +95,20 @@ static int http_prepare_response(connection *conn)
 	int ret;
 	ret = setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
 	if (ret) {
-		printf("failed to set socket to TCP_NODELAY\n");
+		log_warn("failed to set socket to TCP_NODELAY\n");
 		return ret;
 	}
 
 	ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) & ~O_NONBLOCK);
 	if (ret) {
-		printf("failed to set conn to blocking\n");
+		log_warn("failed to set conn to blocking\n");
 		return ret;
 	}
 
 	struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
 	ret = setsockopt(conn->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	if (ret) {
-		printf("failed to set socket to SNDTIMEO\n");
+		log_warn("failed to set socket to SNDTIMEO\n");
 		return ret;
 	}
 
@@ -120,7 +119,7 @@ static void http_response_200(connection *conn, char *buf, size_t len, char *enc
 {
 	struct iovec iovs[3], *iov;
 	int ret;
-	char content[128] = {0};
+	char content[256] = {0};
 	int content_length = 0;
 
 	ret = http_prepare_response(conn);
@@ -136,7 +135,11 @@ static void http_response_200(connection *conn, char *buf, size_t len, char *enc
 	/* 2, http generic content */
 	iov = &iovs[1];
 
-	content_length = sprintf(content, http_generic, encoding, content_type, len);
+	content_length = snprintf(content, sizeof(content), http_generic, encoding, content_type, len);
+	if (content_length < 0 || content_length >= (int)sizeof(content)) {
+		log_err("response header too large, dropping request\n");
+		goto closeconn;
+	}
 	iov->iov_base = content;
 	iov->iov_len = content_length;
 
@@ -159,59 +162,18 @@ static void http_show_samp_done(struct output *op, connection *conn)
 	}
 
 	/* compress data for encoding deflate */
-	char *compbuf = malloc(op->ob.offset);
-	unsigned long complen = op->ob.offset;
+	unsigned long complen = compressBound(op->ob.offset);
+	char *compbuf = malloc(complen);
 
-	if (compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK){
+	if (!compbuf || compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK) {
 		http_prepare_response(conn);
 		conn_write(conn, http_404, strlen(http_404));
+		free(compbuf);
+		return;
 	}
 
 	http_response_200(conn, compbuf, complen, http_content_type_deflate, http_content_type_html);
 	free(compbuf);
-}
-
-static int http_arg_long(char *req, char *needle, long *l)
-{
-	char *s = strstr(req, needle);
-	if (!s)
-		return -1;
-
-	s += strlen(needle);
-	if (*s != '=')
-		return -1;
-
-	*l = atol(++s);
-
-	return 0;
-}
-
-static int http_arg_str(char *req, char *needle, char *p, int len)
-{
-        char *s = strstr(req, needle);
-        if (!s)
-                return -1;
-
-        s += strlen(needle);
-        if (*s++ != '=')
-                return -1;
-
-        char *e = strchr(s, '&');
-        if (!e)
-                e = s + strlen(s);
-
-	if (e - s > len)
-		return -1;
-
-        memcpy(p, s, e - s);
-        p[e - s] = '\0';
-	while ((p = strstr(p, "%2C")) != NULL)
-	{
-		*(p++) = ',';
-		memmove(p, p + 2, strlen(p));
-	}
-
-        return 0;
 }
 
 static void http_showsamp(char *req, connection *conn)
@@ -226,30 +188,41 @@ static void http_showsamp(char *req, connection *conn)
 		return;
 	}
 
+	if (timestamp <= 0) {
+		char *err = "invalid timestamp\r\n";
+		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
+		return;
+	}
+
 	if (http_arg_str(req, "lables", lables, sizeof(lables)) < 0) {
 		char *err = "missing lables\r\n";
 		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
 		return;
 	}
 
-	defop.encoding = http_content_type_deflate;
+	struct output op = {
+		.output_type = OUTPUT_BUF,
+		.done = http_show_samp_done,
+		.encoding = http_content_type_deflate,
+	};
 	if (http_arg_str(req, "encoding", encoding, sizeof(encoding)) == 0) {
 		if (!strcmp(encoding, "none")) {
-			defop.encoding = http_content_type_none;
+			op.encoding = http_content_type_none;
 		} else if (!strcmp(encoding, "deflate")) {
-			defop.encoding = http_content_type_deflate;
+			op.encoding = http_content_type_deflate;
 		} else {
 			char *err = "encoding supports none/deflate only\r\n";
 			http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
-			return;
+			return;   /* op.ob.buf is NULL here, nothing to free */
 		}
 	}
 
-	if (rawlog_get_record(timestamp, lables, conn) < 0) {
+	if (rawlog_get_record(timestamp, lables, conn, &op) < 0) {
 		char *err = "missing sample\r\n";
 		http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
-		return;
 	}
+
+	free(op.ob.buf);
 }
 
 /* Import a binary file */
@@ -378,7 +351,7 @@ static void http_process_request(char *req, connection *conn)
 	char location[URL_LEN] = {0};
 	char *c;
 
-	if (strlen(req) > URL_LEN) {
+	if (strlen(req) >= URL_LEN) {
 		http_prepare_response(conn);
 		conn_write(conn, http_404, strlen(http_404));
 		return;
@@ -438,11 +411,10 @@ static void httpd_handle_request(connection *conn) {
 	char httpreq[URL_LEN] = {0};
 	time_t timeout = httpd_now_ms() + 100;
 	int ret;
-	char *httpver;
 
 	ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
 	if (ret) {
-		printf("failed to set conn to non_blocking");
+		log_warn("failed to set conn to non-blocking\n");
 		goto close_fd;
 	}
 
@@ -461,7 +433,8 @@ static void httpd_handle_request(connection *conn) {
 			continue;
 		}
 
-		ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - inbytes);
+		/* keep one byte for the NUL so strstr() never reads past inbuf */
+		ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - 1 - inbytes);
 		if (ret < 0)
 		{
 			if (ret != -EAGAIN) {
@@ -475,24 +448,47 @@ static void httpd_handle_request(connection *conn) {
 			break;
 
 		/* buf is full, but we can not search the end of HTTP header */
-		if (inbytes == sizeof(inbuf))
+		if (inbytes == sizeof(inbuf) - 1)
 			goto close_fd;
 	}
 
-	/* support GET request only */
+	/*
+	 * Parse the request line "GET <uri> HTTP/1.1". Bound every lookup to the
+	 * first CRLF so nothing reads into the body, and locate the version via
+	 * the space just before it (a query string that itself contains the token
+	 * "HTTP/1.1" must not fool the parser).
+	 */
+	char *eol = strstr(inbuf, "\r\n");
+	if (!eol)
+		goto close_fd;
+
+	/* method: GET only */
 	if (strncmp("GET ", inbuf, 4))
 		goto close_fd;
 
-	/* support HTTP 1.1 request only */
-	httpver = strstr(inbuf, "HTTP/1.1");
-	if (!httpver)
+	char *uri = inbuf + 4;                     /* just after "GET " */
+	char *sp = memchr(uri, ' ', eol - uri);    /* space before the version */
+	if (!sp)
 		goto close_fd;
 
-	/* Ex, GET /hello HTTP/1.1 */
-	if ((httpver - inbuf > URL_LEN + 6) || (httpver - inbuf < 6))
+	/* version: HTTP/1.1 only */
+	if (strncmp(sp + 1, "HTTP/1.1", 8))
 		goto close_fd;
 
-	memcpy(httpreq, inbuf + 5, httpver - inbuf - 6);
+	/*
+	 * The URI must be absolute; drop the leading '/' so it matches the
+	 * routing table, which compares against bare names ("ping", "help", ...).
+	 */
+	if (*uri != '/')
+		goto close_fd;
+	uri++;
+
+	size_t urilen = (size_t)(sp - uri);
+	if (urilen >= URL_LEN)
+		goto close_fd;
+
+	memcpy(httpreq, uri, urilen);
+	httpreq[urilen] = '\0';
 	http_process_request(httpreq, conn);
 
 close_fd:
@@ -509,10 +505,102 @@ static void httpd_update_cache(char *log_path)
 		return;
 
 	if (rawlog_parse_all(log_path)) {
-		printf("%s: rawlog parse failed\n", __func__);
+		log_warn("%s: rawlog parse failed\n", __func__);
 	}
 
 	update = now;
+}
+
+/*
+ * Worker pool. The acceptor thread runs the epoll loop and hands every
+ * accepted connection to a bounded queue; a fixed pool of worker threads drains
+ * the queue and serves requests concurrently. This keeps one slow client from
+ * stalling every other client, and lets independent requests read the raw-log
+ * cache in parallel under the cache read lock.
+ */
+#define WORKER_THREADS 4
+#define WORKQ_CAP 64
+
+static struct workqueue {
+	connection *items[WORKQ_CAP];
+	int head;
+	int tail;
+	int count;
+	int stop;
+	pthread_mutex_t mutex;
+	pthread_cond_t not_empty;
+	pthread_cond_t not_full;
+} workq = {
+	.mutex = PTHREAD_MUTEX_INITIALIZER,
+	.not_empty = PTHREAD_COND_INITIALIZER,
+	.not_full = PTHREAD_COND_INITIALIZER,
+};
+
+/* Producer: block (backpressure) while the queue is full, then enqueue. */
+static void workq_push(connection *conn)
+{
+	pthread_mutex_lock(&workq.mutex);
+	while (workq.count == WORKQ_CAP && !workq.stop)
+		pthread_cond_wait(&workq.not_full, &workq.mutex);
+
+	if (workq.stop) {
+		pthread_mutex_unlock(&workq.mutex);
+		conn_close(conn);
+		free(conn);
+		return;
+	}
+
+	workq.items[workq.tail] = conn;
+	workq.tail = (workq.tail + 1) % WORKQ_CAP;
+	workq.count++;
+	pthread_cond_signal(&workq.not_empty);
+	pthread_mutex_unlock(&workq.mutex);
+}
+
+/* Consumer: block until an item is available; return NULL once stopped+drained. */
+static connection *workq_pop(void)
+{
+	pthread_mutex_lock(&workq.mutex);
+	while (workq.count == 0 && !workq.stop)
+		pthread_cond_wait(&workq.not_empty, &workq.mutex);
+
+	if (workq.count == 0) {
+		pthread_mutex_unlock(&workq.mutex);
+		return NULL;
+	}
+
+	connection *conn = workq.items[workq.head];
+	workq.head = (workq.head + 1) % WORKQ_CAP;
+	workq.count--;
+	pthread_cond_signal(&workq.not_full);
+	pthread_mutex_unlock(&workq.mutex);
+
+	return conn;
+}
+
+static void workq_shutdown(void)
+{
+	pthread_mutex_lock(&workq.mutex);
+	workq.stop = 1;
+	pthread_cond_broadcast(&workq.not_empty);
+	pthread_cond_broadcast(&workq.not_full);
+	pthread_mutex_unlock(&workq.mutex);
+}
+
+static void *httpd_worker(void *arg)
+{
+	(void)arg;
+
+	for ( ; ; ) {
+		connection *conn = workq_pop();
+		if (!conn)
+			break;
+
+		httpd_handle_request(conn);
+		free(conn);
+	}
+
+	return NULL;
 }
 
 static void *httpd_routine(connection **listeners, char *log_path)
@@ -525,7 +613,7 @@ static void *httpd_routine(connection **listeners, char *log_path)
 
 	epollfd = epoll_create1(0);
 	if (epollfd < 0) {
-		printf("Failed create epollfd\n");
+		log_err("Failed create epollfd\n");
 		exit(1);
 	}
 
@@ -537,26 +625,44 @@ static void *httpd_routine(connection **listeners, char *log_path)
 
 		ret = conn_listen(listener);
 		if (ret < 0) {
-			printf("ConnectionType %s failed listening on port %u, aborting.\n", listener->type->get_type(NULL), listener->port);
+			log_err("ConnectionType %s failed listening on port %u, aborting.\n", listener->type->get_type(NULL), listener->port);
 			exit(1);
 		}
 
 		event.events = EPOLLIN;
 		event.data.ptr = listener;
 		if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listener->fd, &event)) {
-			printf("Add listener into epoll failed\n");
+			log_err("Add listener into epoll failed\n");
 			exit(1);
 		}
 		nr_listener++;
 	}
 
 	if (nr_listener == 0) {
-		printf("Listen Nothing, Exit.\n");
+		log_err("Listen Nothing, Exit.\n");
 		exit(1);
 	}
 
-	printf("Ready to serve\n");
-	while (1) {
+	log_info("Ready to serve\n");
+
+	pthread_t workers[WORKER_THREADS];
+	int nr_workers = 0;
+	for (int i = 0; i < WORKER_THREADS; i++) {
+		if (pthread_create(&workers[i], NULL, httpd_worker, NULL) == 0)
+			nr_workers++;
+		else
+			log_warn("failed to create worker thread %d\n", i);
+	}
+	if (nr_workers == 0) {
+		log_err("Failed to create any worker thread, Exit.\n");
+		exit(1);
+	}
+
+	while (!httpd_stop) {
+		/* refresh the cache periodically (throttled to every few seconds)
+		 * so it stays current even when no request is in flight */
+		httpd_update_cache(log_path);
+
 		ret = epoll_wait(epollfd, &event, 1, 1000);
 		if (!ret) {
 			continue;
@@ -566,7 +672,7 @@ static void *httpd_routine(connection **listeners, char *log_path)
 			if (errno == EINTR) {
 				continue;
 			} else {
-				printf("Error in epoll_wait %m\n");
+				log_err("Error in epoll_wait %m\n");
 				exit(1);
 			}
 		}
@@ -581,24 +687,38 @@ static void *httpd_routine(connection **listeners, char *log_path)
 			continue;
 		}
 
-		httpd_handle_request(conn);
-		httpd_update_cache(log_path);
-		free(conn);
+		/* hand the connection to a worker thread; the worker frees it */
+		workq_push(conn);
 	}
 
+	/* drain and stop the pool before returning */
+	workq_shutdown();
+	for (int i = 0; i < nr_workers; i++)
+		pthread_join(workers[i], NULL);
+
+	close(epollfd);
 	return NULL;
+}
+
+static void httpd_on_terminate(int sig)
+{
+	/* request a clean shutdown so the main loop can return normally */
+	(void)sig;
+	httpd_stop = 1;
 }
 
 static int httpd(struct atophttd_context ctx)
 {
 	signal(SIGPIPE, SIG_IGN);
+	signal(SIGTERM, httpd_on_terminate);
+	signal(SIGINT, httpd_on_terminate);
 	connection *listener;
 	int conn_index, ret;
 
 	if (ctx.port > 0) {
 		conn_index = get_conntype_index_by_name(CONN_TYPE_SOCKET);
 		if (conn_index < 0) {
-			printf("Failed finding connectin listener of %s\n", CONN_TYPE_SOCKET);
+			log_err("Failed finding connection listener of %s\n", CONN_TYPE_SOCKET);
 			exit(1);
 		}
 		listener = conn_create(get_conntype_by_name(CONN_TYPE_SOCKET), ctx.port, ctx.addr);
@@ -614,15 +734,17 @@ static int httpd(struct atophttd_context ctx)
 
 		ret = conn_configure(get_conntype_by_name(CONN_TYPE_TLS), &ctx.tls_ctx_config, 1);
 		if (ret < 0) {
-			printf("Failed to configure TLS\n");
+			log_err("Failed to configure TLS\n");
 			exit(1);
 		}
 
 		ctx.listeners[conn_index] = listener;
 	}
 
-        if (ctx.daemonmode)
-                daemon(0, 0);
+	if (ctx.daemonmode && daemon(0, 0)) {
+		log_err("failed to daemonize: %m\n");
+		exit(1);
+	}
 
 	httpd_routine(ctx.listeners, ctx.log_path);
 	return 0;
@@ -676,8 +798,9 @@ static void httpd_showversion(void)
 
 int main(int argc, char *argv[])
 {
-	int args, errno;
+	int args;
 	int ch;
+	int rc;
 
 	while (1) {
 		ch = getopt_long(argc, argv, short_opts, long_opts, &args);
@@ -725,31 +848,32 @@ int main(int argc, char *argv[])
 				break;
 			case 'V':
 				httpd_showversion();
+				break;
 			case 'h':
 			default:
 				httpd_showhelp();
 		}
 	}
 
+	log_open(config.daemonmode);
+
 	pagesize = sysconf(_SC_PAGESIZE);
 	hertz = sysconf(_SC_CLK_TCK);
 	uname(&utsname);
 
 	if (config.log_path == NULL) {
-		printf("%s: log path is nil\n", __func__);
+		log_err("%s: log path is nil\n", __func__);
 		return -1;
 	}
 
 	if (rawlog_parse_all(config.log_path)) {
-		printf("%s: rawlog parse failed\n", __func__);
+		log_err("%s: rawlog parse failed\n", __func__);
 		return -1;
 	}
 
-	log_debug("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
-
-	printf("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
+	log_info("%s runs with log path(%s), port(%d)\n", argv[0], config.log_path, config.port);
 	conntype_initialize();
-	errno = httpd(config);
+	rc = httpd(config);
 
-	return errno;
+	return rc;
 }

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+	# Register the unit (enable at boot) using the Debian helper.
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper enable atophttpd.service >/dev/null 2>&1 || true
+	fi
+	# Reload and (best-effort) start when running under systemd.
+	if [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null 2>&1 || true
+		if command -v deb-systemd-invoke >/dev/null 2>&1; then
+			deb-systemd-invoke start atophttpd.service >/dev/null 2>&1 || true
+		fi
+	fi
+fi
+
+exit 0

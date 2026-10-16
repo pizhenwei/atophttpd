@@ -59,3 +59,27 @@ tags
 
 # debian package
 *.deb
+
+# coverage / test artefacts
+*.gcda
+*.gcno
+*.gcov
+coverage.info
+coverage/
+__pycache__/
+.sonar-test-scratch/
+
+# compiled unit-test binaries (keep the sources/headers next to them)
+tests/unit/test_*
+!tests/unit/test_*.c
+!tests/unit/test_*.h
+
+# fuzzing: harness binaries, crash reproducers and libFuzzer-generated corpus
+# entries (SHA1-named). The human-written seeds and the corpus layout are kept.
+fuzz/fuzz_http_args
+fuzz/fuzz_rawlog
+fuzz/crashes/
+fuzz/corpus/http_args/*
+!fuzz/corpus/http_args/seed_*
+fuzz/corpus/rawlog/*
+!fuzz/corpus/rawlog/.gitkeep

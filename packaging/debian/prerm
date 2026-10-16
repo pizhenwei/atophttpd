@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+	if [ -d /run/systemd/system ] && command -v deb-systemd-invoke >/dev/null 2>&1; then
+		deb-systemd-invoke stop atophttpd.service >/dev/null 2>&1 || true
+	fi
+fi
+
+exit 0

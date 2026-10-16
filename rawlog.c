@@ -29,6 +29,7 @@
 #include "cache.h"
 #include "httpd.h"
 #include "json.h"
+#include "log.h"
 #include "rawlog.h"
 
 /* a little tricky: implemented in atop/version.c */
@@ -60,23 +61,23 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 
 	int fd = open(cache->name, O_RDONLY);
 	if (fd < 0) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, cache->name);
 		return -errno;
 	}
 
 	off_t off = elem->off;
 	ssize_t len = pread(fd, &rr, sizeof(rr), off);
-	if (len < sizeof(rr))
+	if (len < (ssize_t)sizeof(rr))
 		goto close_fd;
 
-	off = off + sizeof(rr) + rr.scomplen + rr.pcomplen;
+	off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	while (1) {
 		len = pread(fd, &rr, sizeof(rr), off);
-		if (len < sizeof(rr))
+		if (len < (ssize_t)sizeof(rr))
 			break;
 
 		cache_set(cache, rr.curtime, off);
-		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen;
+		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	}
 
 	log_debug("\"%s\" has %d records of time[%ld - %ld]\n", cache->name,
@@ -85,7 +86,7 @@ static int rawlog_rebuild_one(struct cache_t *cache)
 	struct stat statbuf;
 	ret = fstat(fd, &statbuf);
 	if (ret < 0) {
-		printf("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, cache->name);
 		ret = -errno;
 		goto close_fd;
 	}
@@ -114,7 +115,7 @@ static int rawlog_parse_one(const char *path)
 	if (cache) {
 		ret = stat(path, &statbuf);
 		if (ret < 0) {
-			printf("%s: stat \"%s\" failed: %m\n", __func__, path);
+			log_err("%s: stat \"%s\" failed: %m\n", __func__, path);
 			return -errno;
 		}
 
@@ -127,21 +128,21 @@ static int rawlog_parse_one(const char *path)
 
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, path);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, path);
 		return -errno;
 	}
 
 	/* 1, read rawheader */
 	len = read(fd, &rh, sizeof(rh));
-	if (len < sizeof(rh)) {
-		printf("%s: \"%s\" is not atop rawlog file\n", __func__, path);
+	if (len < (ssize_t)sizeof(rh)) {
+		log_err("%s: \"%s\" is not atop rawlog file\n", __func__, path);
 		ret = -EINVAL;
 		goto close_fd;
 	}
 
 	ret = rawlog_verify_rawheader(&rh);
 	if (ret) {
-		printf("%s: \"%s\" verify rawheader failed\n", __func__, path);
+		log_err("%s: \"%s\" verify rawheader failed\n", __func__, path);
 		goto close_fd;
 	}
 
@@ -156,23 +157,23 @@ static int rawlog_parse_one(const char *path)
 	/* 3, read all rawrecords, cache time&off mapping */
 	off = lseek(fd, 0, SEEK_CUR);
 	if (off < 0) {
-		printf("%s: move offset failed\n", __func__);
+		log_err("%s: move offset failed\n", __func__);
 		ret = -errno;
 		goto close_fd;
 	}
 	while (1) {
 		len = pread(fd, &rr, sizeof(rr), off);
-		if (len < sizeof(rr))
+		if (len < (ssize_t)sizeof(rr))
 			break;
 
 		cache_set(cache, rr.curtime, off);
-		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen;
+		off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
 	}
 
 	/* 4, update rawlog size & st_mtim */
 	ret = fstat(fd, &statbuf);
 	if (ret < 0) {
-		printf("%s: fstat \"%s\" failed", __func__, path);
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, path);
 		ret = -errno;
 		goto close_fd;
 	}
@@ -203,19 +204,23 @@ int rawlog_parse_all(const char *path)
 	char name[PATH_MAX] = {0};
 
 	if (!dir) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, path);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, path);
 		return -errno;
 	}
 
+	/* Single writer: exclude all cache readers while the array is rewritten. */
+	cache_wrlock();
 	while ((dirent = readdir(dir))) {
 		if (dirent->d_type != DT_REG)
 			continue;
 
-		sprintf(name, "%s/%s", path, dirent->d_name);
-		rawlog_parse_one(name);
+		/* skip entries whose full path would not fit (prevents overflow) */
+		if (snprintf(name, sizeof(name), "%s/%s", path, dirent->d_name) < (int)sizeof(name))
+			rawlog_parse_one(name);
 	}
 
 	cache_sort();
+	cache_unlock();
 
 	closedir(dir);
 
@@ -265,21 +270,34 @@ static int rawlog_get_devtstat(int fd, struct devtstat *devtstat, struct rawreco
 	int ret;
 	unsigned long ntaskall = 0, nprocall = 0, nprocactive = 0, ntaskactive = 0;
 
-	/* 1, allocate memory */
+	/* Reject implausible counts before they size any allocation: a sample
+	 * holds at most ndeviat tasks, so it cannot contain more processes
+	 * (totproc) or active processes (nactproc) than that, and zlib cannot
+	 * expand the compressed task blob by more than ~1032x, so it cannot
+	 * decompress to more tstats than that ratio allows. With pcomplen already
+	 * bounded to the file size by the caller, this bounds every allocation
+	 * below (and the process pointer arrays are sized by ndeviat so the fill
+	 * loop can never overrun them). */
+	if (rr->totproc > rr->ndeviat || rr->nactproc > rr->ndeviat ||
+	    outlen > (unsigned long)rr->pcomplen * 1032 + sizeof(struct tstat))
+		return -EINVAL;
+
+	/* 1, allocate memory (taskall is calloc'd so a short decompression
+	 * cannot leave the fill loop reading indeterminate task flags) */
 	memset(devtstat, 0x00, sizeof(struct devtstat));
-	devtstat->taskall = malloc(outlen);
+	devtstat->taskall = calloc(rr->ndeviat, sizeof(struct tstat));
 	if (!devtstat->taskall) {
 		ret = -ENOMEM;
 		goto free_devtstat;
 	}
 
-	devtstat->procall = malloc(sizeof(struct tstat*) * rr->totproc);
+	devtstat->procall = malloc(sizeof(struct tstat*) * rr->ndeviat);
 	if (!devtstat->procall) {
 		ret = -ENOMEM;
 		goto free_devtstat;
 	}
 
-	devtstat->procactive = malloc(sizeof(struct tstat*) * rr->nactproc);
+	devtstat->procactive = malloc(sizeof(struct tstat*) * rr->ndeviat);
 	if (!devtstat->procactive) {
 		ret = -ENOMEM;
 		goto free_devtstat;
@@ -344,8 +362,8 @@ static int rawlog_record_flags(int hflags, int rflags)
 	if (rflags & RRCGRSTAT)
 		ret |= CGROUPV2;
 
-	if (rflags & RRDOCKSTAT)
-		ret |= DOCKSTAT;
+	if (rflags & RRCONTAINERSTAT)
+		ret |= CONTAINERSTAT;
 
 	if (rflags & RRGPUSTAT)
 		ret |= GPUSTAT;
@@ -353,7 +371,7 @@ static int rawlog_record_flags(int hflags, int rflags)
 	return ret;
 }
 
-int rawlog_get_record(time_t ts, char *labels, connection *conn)
+int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *op)
 {
 	struct rawrecord rr;
 	struct sstat *sstat;
@@ -364,6 +382,8 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn)
 	int flags;
 	off_t off;
 	time_t recent_ts;
+	char *name = NULL;
+	int cache_flags = 0;
 
 	sstat = malloc(sizeof(struct sstat));
 	if (sstat == NULL) {
@@ -371,71 +391,114 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn)
 		return -ENOMEM;
 	}
 
+	/*
+	 * Resolve the record under the cache read lock, then copy out everything
+	 * the rest of the function needs (the file name, the record offset and the
+	 * header flags) and release the lock *before* any file I/O or the network
+	 * send. Holding the read lock across those would let a single slow-reading
+	 * client keep it for up to the socket send timeout, stalling the cache
+	 * writer -- and therefore the acceptor thread that takes the write lock --
+	 * which would stop new connections from being accepted. The raw-log file
+	 * stays valid on disk by path even if the writer later frees or rebuilds
+	 * the cache entry, so opening it lock-free is safe.
+	 */
+	cache_rdlock();
 	struct cache_t *cache = cache_get(ts, &off);
-	if (cache)
-		goto found;
-
-	log_debug("no record @%ld\n", ts);
-
-	cache = cache_get_recent();
 	if (!cache) {
-		ret = -EIO;
+		log_debug("no record @%ld\n", ts);
+
+		cache = cache_get_recent();
+		if (!cache) {
+			cache_unlock();
+			ret = -EIO;
+			goto free_sstat;
+		}
+
+		recent_ts = cache->elems[cache->nr_elems - 1].time;
+		if (ts < recent_ts) {
+			cache_unlock();
+			ret = -EIO;
+			goto free_sstat;
+		}
+
+		off = cache->elems[cache->nr_elems - 1].off;
+		log_debug("use recent @%ld from %s\n", cache->elems[cache->nr_elems - 1].time, cache->name);
+	}
+
+	name = strdup(cache->name);
+	cache_flags = cache->flags;
+	cache_unlock();
+
+	if (!name) {
+		ret = -ENOMEM;
 		goto free_sstat;
 	}
 
-	recent_ts = cache->elems[cache->nr_elems - 1].time;
-	if (ts < recent_ts) {
-		ret = -EIO;
-		goto free_sstat;
-	}
+	log_debug("time %ld, off %ld in %s\n", ts, off, name);
 
-	off = cache->elems[cache->nr_elems - 1].off;
-	log_debug("use recent @%ld from %s\n", cache->elems[cache->nr_elems - 1].time, cache->name);
-
-found:
-	log_debug("time %ld, off %ld in %s\n", ts, off, cache->name);
-
-	fd = open(cache->name, O_RDONLY);
+	fd = open(name, O_RDONLY);
 	if (fd < 0) {
-		printf("%s: open \"%s\" failed: %m\n", __func__, cache->name);
+		log_err("%s: open \"%s\" failed: %m\n", __func__, name);
 		ret = -errno;
-		goto free_sstat;
+		goto free_name;
 	}
 
 	ret = lseek(fd, off, SEEK_CUR);
 	if (ret < 0) {
-		printf("%s: move offset failed\n", __func__);
+		log_err("%s: move offset failed\n", __func__);
 		ret = -errno;
 		goto close_fd;
 	}
 
 	len = read(fd, &rr, sizeof(rr));
 	if (len != sizeof(rr)) {
-		printf("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, incomplete record\n", __func__, ts, off, name);
 		ret = -EIO;
 		goto close_fd;
 	}
-	log_debug("time %ld, off %ld in %s, rr.curtime %ld\n", ts, off, cache->name, rr.curtime);
+	log_debug("time %ld, off %ld in %s, rr.curtime %ld\n", ts, off, name, rr.curtime);
+
+	/* The record's compressed blobs must physically fit within the file.
+	 * Reject lengths that run past EOF before they are used to size any
+	 * allocation -- this stops a corrupt or malicious raw-log from driving
+	 * an unbounded malloc() in the decompression path below. */
+	struct stat rrst;
+	if (fstat(fd, &rrst) < 0) {
+		log_err("%s: fstat \"%s\" failed: %m\n", __func__, name);
+		ret = -errno;
+		goto close_fd;
+	}
+	off_t body = off + (off_t)sizeof(rr);
+	unsigned long bloblen = (unsigned long)rr.scomplen + rr.pcomplen +
+	                        rr.ccomplen + rr.icomplen;
+	if (body > rrst.st_size || bloblen > (unsigned long)(rrst.st_size - body)) {
+		log_err("%s: time %ld, off %ld in %s, record exceeds file bounds\n",
+			__func__, ts, off, name);
+		ret = -EINVAL;
+		goto close_fd;
+	}
 
 	ret = rawlog_get_sstat(fd, sstat, rr.scomplen);
 	if (ret) {
-		printf("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, get sstat failed\n", __func__, ts, off, name);
 		goto close_fd;
 	}
 
 	ret = rawlog_get_devtstat(fd, &devtstat, &rr);
 	if (ret) {
-		printf("%s: time %ld, off %ld in %s, get devtstat failed\n", __func__, ts, off, cache->name);
+		log_err("%s: time %ld, off %ld in %s, get devtstat failed\n", __func__, ts, off, name);
 		goto close_fd;
 	}
 
-	flags = rawlog_record_flags(cache->flags, rr.flags);
-	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, sstat, rr.nexit, rr.noverflow, 0, conn);
+	flags = rawlog_record_flags(cache_flags, rr.flags);
+	jsonout(flags, labels, rr.curtime, rr.interval, &devtstat, sstat, rr.nexit, rr.noverflow, 0, conn, op);
 
 	rawlog_free_devtstat(&devtstat);
 
 close_fd:
 	close(fd);
+free_name:
+	free(name);
 free_sstat:
 	free(sstat);
 

@@ -34,10 +34,24 @@ batch.
 
 ### run atophttpd daemon:
 ```
- make
+ make                      # builds against atop v2.11.1 by default
  ./atophttpd -d #run in daemon only on localhost
  ./atophttpd -d -a ${IP} #run in daemon on ip
 ```
+
+**Match the atop version.** atophttpd reads atop's *version-specific* binary
+raw-log format, so it must be compiled against the same atop release that runs
+on the host. The build targets atop **v2.11.1** by default (Debian trixie).
+Other releases of the same generation (the cgroup-v2 raw-log format, roughly
+atop 2.9–2.11) can be selected via `ATOP_VERSION`:
+```
+ make                        # atop v2.11.1 (default, CI-tested)
+ make ATOP_VERSION=v2.10.0   # another 2.9-2.11 tag of the submodule
+```
+Older generations (e.g. atop 2.8 on Debian bookworm) use a different struct
+and record layout; retargeting to them requires minor source changes in
+`json.c`/`rawlog.c`, so use an atophttpd revision built for that generation
+instead.
 
 ### access atophttpd server:
 * By a web browser, for example: `192.168.1.100:2867`,
@@ -54,7 +68,7 @@ to get the help page by `192.168.1.100:2867/help`.
 ### run atophttpd daemon with TLS:
 ```
  make USE_TLS=YES
- /atophttpd -t 2868 -C tls/ca.crt -c tls/server.crt -k tls/server.key
+ ./atophttpd -t 2868 -C tls/ca.crt -c tls/server.crt -k tls/server.key
 ```
 
 Or use default TLS config:
@@ -69,5 +83,63 @@ Or use default TLS config:
 curl --cacert tls/ca.crt --cert tls/client.crt --key tls/client.key 'https://127.0.0.1:2868/showsamp?lables=ALL&timestamp=1684402523&encoding=none'
 ```
 
-## Limitation
-Currently, atophttpd supports atop v2.8 only.
+## Packaging (Debian/Ubuntu)
+Build a hardened `.deb` straight from the tree:
+```
+ make deb        # produces atophttpd_<atop-version>_<arch>.deb
+```
+The package installs:
+* `/usr/bin/atophttpd` — the stripped, hardened binary (PIE, full RELRO,
+  stack protector, `_FORTIFY_SOURCE`);
+* `/usr/lib/systemd/system/atophttpd.service` — a sandboxed systemd unit;
+* `/etc/default/atophttpd` — the configuration file (a conffile, so your edits
+  survive upgrades);
+* `/usr/share/man/man1/atophttpd.1` — the manual page.
+
+It declares a versioned dependency on the matching atop *minor* series (atop
+and atophttpd must share the same raw-log format), so `apt` pulls in a
+compatible atop.
+
+After installing the package (`sudo apt install ./atophttpd_*.deb`):
+```
+ sudoedit /etc/default/atophttpd        # set PORT, LOGPATH, ATOPHTTPD_OPTS
+ sudo systemctl enable --now atophttpd
+ systemctl status atophttpd
+```
+The service `Requires=atop.service` (it needs atop to be writing raw-logs) and
+runs under a locked-down sandbox: `DynamicUser`, `ProtectSystem=strict`,
+`NoNewPrivileges`, `RestrictAddressFamilies=AF_INET AF_INET6`,
+`MemoryDenyWriteExecute`, and more. All runtime settings live in
+`/etc/default/atophttpd`:
+```
+ PORT=2867                     # TCP port
+ LOGPATH=/var/log/atop         # atop raw-log directory
+ ATOPHTTPD_OPTS="-a 0.0.0.0"   # extra flags, e.g. bind all interfaces or TLS
+```
+
+## Testing
+The suite (unit tests in C, integration tests in Python) and its quality gates
+are driven from the top-level Makefile:
+```
+ make check                    # unit + integration tests
+ make coverage COV=90          # + gcov/lcov line-coverage gate (>= 90%)
+ make sanitize                 # whole suite under AddressSanitizer + UBSan
+ make tsan                     # whole suite under ThreadSanitizer
+ make fuzz FUZZ_SECONDS=30     # libFuzzer against the raw-log/query parsers
+```
+Extra tooling for these targets: `lcov` (coverage), `clang` (fuzzing), and
+`pkg-config`/`libglib2.0-dev` (to build the atop submodule that generates the
+sample raw-logs). Every target above also runs on each push and pull request
+via GitHub Actions (`.github/workflows/ci.yml`).
+
+## Limitations
+atophttpd is compiled against **one** atop release at a time (default
+`v2.11.1`) and reads only raw-logs produced by that same release; it does not
+parse logs from a different atop version. Re-build with the matching
+`ATOP_VERSION` for your host, or convert old logs with atop's own
+`atopconvert` tool.
+
+Building the atop submodule (used to generate sample raw-logs for the
+integration tests) requires `pkg-config` and the glib-2.0 development headers
+(`libglib2.0-dev` on Debian/Ubuntu, `glib2-devel` on RHEL/Fedora). atophttpd
+itself does not depend on glib.

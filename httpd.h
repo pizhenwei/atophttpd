@@ -22,7 +22,8 @@ extern int __debug;
 	}
 
 int rawlog_parse_all(const char *path);
-int rawlog_get_record(time_t ts, char *lables, connection *conn);
+struct output;
+int rawlog_get_record(time_t ts, char *lables, connection *conn, struct output *op);
 
 typedef struct atophttpd_tls_context_config {
 	int tls_port;

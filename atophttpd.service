@@ -2,12 +2,31 @@
 Description=A web style atop(https://www.atoptool.nl)
 Documentation=man:atophttpd(1)
 Requires=atop.service
+After=atop.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-Environment="PORT=2867"
-Environment="LOGPATH=/var/log/atop"
-ExecStart=/bin/sh -c 'exec /usr/bin/atophttpd -P ${LOGPATH} -p ${PORT}'
+EnvironmentFile=-/etc/default/atophttpd
+ExecStart=/bin/sh -c 'exec /usr/bin/atophttpd -P "${LOGPATH:-/var/log/atop}" -p "${PORT:-2867}" ${ATOPHTTPD_OPTS}'
+Restart=on-failure
+RestartSec=5
+
+# --- Hardening -------------------------------------------------------------
+# atophttpd only needs to read atop's raw-logs and bind a TCP socket.
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=multi-user.target

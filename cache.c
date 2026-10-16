@@ -9,6 +9,7 @@
  */
 
 #include <assert.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,23 @@
 
 static int nr_caches;
 static struct cache_t **caches;
+
+static pthread_rwlock_t cache_rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
+void cache_rdlock(void)
+{
+	pthread_rwlock_rdlock(&cache_rwlock);
+}
+
+void cache_wrlock(void)
+{
+	pthread_rwlock_wrlock(&cache_rwlock);
+}
+
+void cache_unlock(void)
+{
+	pthread_rwlock_unlock(&cache_rwlock);
+}
 
 struct cache_t *cache_find(const char *name)
 {
@@ -35,28 +53,43 @@ struct cache_t *cache_find(const char *name)
 struct cache_t *cache_alloc(const char *name)
 {
 	struct cache_t *cache = cache_find(name);
+	struct cache_t **grown;
 
 	assert(!cache);
 
 	cache = calloc(1, sizeof(*cache));
-	assert(cache);
+	if (!cache)
+		return NULL;
 
 	cache->name = strdup(name);
-	assert(cache->name);
+	if (!cache->name)
+		goto err_cache;
 
 	cache->nr_elems = 0;
 	cache->max_elems = RECORDS_TRUNK;
 	cache->elems = calloc(cache->max_elems, sizeof(struct cache_elem_t));
-	assert(cache->elems);
+	if (!cache->elems)
+		goto err_name;
 
 	if (!caches)
-		caches = calloc(1, sizeof(struct cache_t *));
+		grown = calloc(1, sizeof(struct cache_t *));
 	else
-		caches = realloc(caches, sizeof(struct cache_t *) * (nr_caches + 1));
+		grown = realloc(caches, sizeof(struct cache_t *) * (nr_caches + 1));
+	if (!grown)
+		goto err_elems;
+	caches = grown;
 
 	caches[nr_caches++] = cache;
 
 	return cache;
+
+err_elems:
+	free(cache->elems);
+err_name:
+	free(cache->name);
+err_cache:
+	free(cache);
+	return NULL;
 }
 
 void cache_free(const char *name)
@@ -78,7 +111,15 @@ void cache_free(const char *name)
 	}
 
 	nr_caches--;
-	caches = realloc(caches, sizeof(struct cache_t *) * (nr_caches));
+	if (!nr_caches) {
+		free(caches);
+		caches = NULL;
+	} else {
+		struct cache_t **shrunk =
+			realloc(caches, sizeof(struct cache_t *) * nr_caches);
+		if (shrunk)
+			caches = shrunk;
+	}
 }
 
 static struct cache_t *__cache_get(time_t time)
@@ -137,14 +178,19 @@ static int cache_elems_cmp(const void *p1, const void *p2)
 	struct cache_elem_t *e1 = (struct cache_elem_t *)p1;
 	struct cache_elem_t *e2 = (struct cache_elem_t *)p2;
 
-	return e1->time > e2->time;
+	return (e1->time > e2->time) - (e1->time < e2->time);
 }
 
 void cache_set(struct cache_t *cache, time_t time, off_t off)
 {
 	if (cache->nr_elems == cache->max_elems) {
-		cache->max_elems += RECORDS_TRUNK;
-		cache->elems = realloc(cache->elems, sizeof(struct cache_elem_t) * cache->max_elems);
+		int new_max = cache->max_elems + RECORDS_TRUNK;
+		struct cache_elem_t *grown =
+			realloc(cache->elems, sizeof(struct cache_elem_t) * new_max);
+		if (!grown)
+			return;
+		cache->elems = grown;
+		cache->max_elems = new_max;
 	}
 
 	struct cache_elem_t *new_elem = &cache->elems[cache->nr_elems++];
@@ -165,11 +211,17 @@ static int cache_cmp(const void *p1, const void *p2)
 	struct cache_t **c1 = (struct cache_t **)p1;
 	struct cache_t **c2 = (struct cache_t **)p2;
 
-	return (*c1)->elems[0].time > (*c2)->elems[0].time;
+	return ((*c1)->elems[0].time > (*c2)->elems[0].time) -
+	       ((*c1)->elems[0].time < (*c2)->elems[0].time);
 }
 
 void cache_sort()
 {
+	/* qsort() is declared nonnull: skip it when there is nothing to sort
+	 * (caches is NULL while no cache has been allocated yet). */
+	if (nr_caches < 2)
+		return;
+
 	qsort(caches, nr_caches, sizeof(struct cache_t *), cache_cmp);
 }
 
@@ -180,30 +232,3 @@ struct cache_t *cache_get_recent()
 
 	return caches[nr_caches - 1];
 }
-
-#ifdef CACHE_TEST
-int main()
-{
-	assert(!cache_find("test0"));
-
-	struct cache_t *cache0 = cache_alloc("test0");
-	cache_set(cache0, 100, 1000);
-	assert(cache0->elems[0].time == 100);
-	cache_set(cache0, 102, 1002);
-	assert(cache0->elems[0].time == 100);
-	assert(cache0->elems[1].time == 102);
-	cache_set(cache0, 101, 1001);
-	assert(cache0->nr_elems == 3);
-	assert(cache0->elems[0].time < cache0->elems[1].time);
-	assert(cache0->elems[1].time < cache0->elems[2].time);
-
-	struct cache_t *cache1 = cache_alloc("test1");
-	cache_set(cache1, 200, 2000);
-	cache_free("test0");
-	assert(nr_caches == 1);
-	assert(caches[0]->elems[0].time == 200);
-	assert(caches[0]->elems[0].off == 2000);
-
-	return 0;
-}
-#endif
