@@ -32,6 +32,20 @@
 #include "log.h"
 #include "rawlog.h"
 
+/*
+** The cgroup record-length fields (ccomplen/icomplen) were added to struct
+** rawrecord in atop 2.11.  When compiled against an older header they do not
+** exist at all, and the record body spans only the sstat/tstat blobs.
+** RECORD_HAS_CGROUPLEN is set by the Makefile after it detects the fields in
+** the pinned atop/rawlog.h, keeping this file buildable for >= 2.11 and for
+** 2.9/2.10 alike.
+*/
+#ifdef RECORD_HAS_CGROUPLEN
+#define RR_BLOB_LEN(rr) ((unsigned long)(rr).scomplen + (rr).pcomplen + (rr).ccomplen + (rr).icomplen)
+#else
+#define RR_BLOB_LEN(rr) ((unsigned long)(rr).scomplen + (rr).pcomplen)
+#endif
+
 /* a little tricky: implemented in atop/version.c */
 unsigned short getnumvers(void);
 
@@ -69,14 +83,14 @@ static int rawlog_rebuild_one(struct cache_t *cache)
     if (len < (ssize_t)sizeof(rr))
         goto close_fd;
 
-    off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
+    off = off + sizeof(rr) + RR_BLOB_LEN(rr);
     while (1) {
         len = pread(fd, &rr, sizeof(rr), off);
         if (len < (ssize_t)sizeof(rr))
             break;
 
         cache_set(cache, rr.curtime, off);
-        off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
+        off = off + sizeof(rr) + RR_BLOB_LEN(rr);
     }
 
     log_debug("\"%s\" has %d records of time[%ld - %ld]\n", cache->name, cache->nr_elems,
@@ -166,7 +180,7 @@ static int rawlog_parse_one(const char *path)
             break;
 
         cache_set(cache, rr.curtime, off);
-        off = off + sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
+        off = off + sizeof(rr) + RR_BLOB_LEN(rr);
     }
 
     /* 4, update rawlog size & st_mtim */
@@ -466,7 +480,7 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *
         goto close_fd;
     }
     off_t body = off + (off_t)sizeof(rr);
-    unsigned long bloblen = (unsigned long)rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
+    unsigned long bloblen = RR_BLOB_LEN(rr);
     if (body > rrst.st_size || bloblen > (unsigned long)(rrst.st_size - body)) {
         log_err("%s: time %ld, off %ld in %s, record exceeds file bounds\n", __func__, ts, off,
                 name);

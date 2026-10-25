@@ -46,6 +46,17 @@ bin: $(OBJS)
 %.o: %.c
 	$(CC) -c $(CFLAGS) $*.c -o $*.o
 
+# struct rawrecord gained the cgroup record-length fields (ccomplen/icomplen)
+# in atop 2.11; detect them in the pinned atop/rawlog.h so rawlog.c stays
+# buildable on both sides of that boundary (v2.11+ has them, v2.9/v2.10 do
+# not). This rule overrides the generic %.o pattern above.
+rawlog.o: rawlog.c
+	@if grep -q 'ccomplen' atop/rawlog.h; then \
+		$(CC) -c $(CFLAGS) -DRECORD_HAS_CGROUPLEN rawlog.c -o rawlog.o; \
+	else \
+		$(CC) -c $(CFLAGS) rawlog.c -o rawlog.o; \
+	fi
+
 version.o:
 	@make -C atop versdate.h
 	$(CC) -c $(CFLAGS) atop/version.c -o version.o
