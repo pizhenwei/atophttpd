@@ -1,6 +1,6 @@
 # Maintainer
-- zhenwei pi <pizhenwei@bytedance.com> (HTTP backend)
-- Enhua Zhou <zhouenhua@bytedance.com> (HTTP frontend)
+- zhenwei pi <zhenwei.pi@linux.dev> / <pizhenwei@tensorfer.com> (HTTP backend)
+- Enhua Zhou <meinhardzh@gmail.com> (HTTP frontend)
 
 # Patch is always welcomed!
 - Sending patch to maintainer by email
