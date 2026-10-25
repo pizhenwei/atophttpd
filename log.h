@@ -24,10 +24,9 @@
  */
 void log_open(int daemon_mode);
 
-void log_msg(int priority, const char *fmt, ...)
-	__attribute__((format(printf, 2, 3)));
+void log_msg(int priority, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-#define log_err(fmt, ...)  log_msg(LOG_ERR, fmt, ##__VA_ARGS__)
+#define log_err(fmt, ...) log_msg(LOG_ERR, fmt, ##__VA_ARGS__)
 #define log_warn(fmt, ...) log_msg(LOG_WARNING, fmt, ##__VA_ARGS__)
 #define log_info(fmt, ...) log_msg(LOG_INFO, fmt, ##__VA_ARGS__)
 

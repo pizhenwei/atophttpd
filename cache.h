@@ -15,18 +15,18 @@
 #include <time.h>
 
 struct cache_elem_t {
-	time_t time;
-	off_t off;
+    time_t time;
+    off_t off;
 };
 
 struct cache_t {
-	char *name;
-	int flags;
-	int max_elems;
-	int nr_elems;
-	struct cache_elem_t *elems;
-	off_t st_size;
-	struct timespec st_mtim;
+    char *name;
+    int flags;
+    int max_elems;
+    int nr_elems;
+    struct cache_elem_t *elems;
+    off_t st_size;
+    struct timespec st_mtim;
 };
 
 struct cache_t *cache_alloc(const char *name);

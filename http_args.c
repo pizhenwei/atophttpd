@@ -24,50 +24,49 @@
  */
 static const char *http_arg_value(const char *req, const char *needle)
 {
-	size_t nlen = strlen(needle);
-	const char *s = req;
+    size_t nlen = strlen(needle);
+    const char *s = req;
 
-	while ((s = strstr(s, needle)) != NULL) {
-		int at_boundary = (s == req) || (s[-1] == '?') || (s[-1] == '&');
-		if (at_boundary && s[nlen] == '=')
-			return s + nlen + 1;
-		s++;
-	}
+    while ((s = strstr(s, needle)) != NULL) {
+        int at_boundary = (s == req) || (s[-1] == '?') || (s[-1] == '&');
+        if (at_boundary && s[nlen] == '=')
+            return s + nlen + 1;
+        s++;
+    }
 
-	return NULL;
+    return NULL;
 }
 
 int http_arg_long(const char *req, const char *needle, long *l)
 {
-	const char *s = http_arg_value(req, needle);
-	if (!s)
-		return -1;
+    const char *s = http_arg_value(req, needle);
+    if (!s)
+        return -1;
 
-	*l = atol(s);
+    *l = atol(s);
 
-	return 0;
+    return 0;
 }
 
 int http_arg_str(const char *req, const char *needle, char *p, int len)
 {
-	const char *s = http_arg_value(req, needle);
-	if (!s)
-		return -1;
+    const char *s = http_arg_value(req, needle);
+    if (!s)
+        return -1;
 
-	const char *e = strchr(s, '&');
-	if (!e)
-		e = s + strlen(s);
+    const char *e = strchr(s, '&');
+    if (!e)
+        e = s + strlen(s);
 
-	if (e - s >= len)
-		return -1;
+    if (e - s >= len)
+        return -1;
 
-	memcpy(p, s, e - s);
-	p[e - s] = '\0';
-	while ((p = strstr(p, "%2C")) != NULL)
-	{
-		*(p++) = ',';
-		memmove(p, p + 2, strlen(p + 2) + 1);
-	}
+    memcpy(p, s, e - s);
+    p[e - s] = '\0';
+    while ((p = strstr(p, "%2C")) != NULL) {
+        *(p++) = ',';
+        memmove(p, p + 2, strlen(p + 2) + 1);
+    }
 
-	return 0;
+    return 0;
 }

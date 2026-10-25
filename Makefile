@@ -13,6 +13,7 @@ OBJS = cache.o httpd.o json.o output.o rawlog.o version.o connection.o socket.o 
 BIN = atophttpd
 PREFIX := $(prefix)
 CC=gcc
+CLANGFMT = clang-format-18
 
 # atop version atophttpd is compiled against. It MUST match the atop release
 # installed on the target host, because atophttpd reads atop's version-specific
@@ -93,3 +94,8 @@ clean:
 	@rm -f $(BIN) *.o *.deb *.gcda *.gcno coverage.info
 	@rm -rf coverage
 	@make -C tests clean 2>/dev/null || true
+
+# Format all project sources with clang-format; keep the atop submodule
+# untouched so it stays pristine for upstream diffing.
+format:
+	@$(CLANGFMT) -i $(filter-out ./atop/%,$(shell find . -name '*.c' -o -name '*.h'))

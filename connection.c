@@ -22,147 +22,152 @@
 #include "connection.h"
 #include "log.h"
 
-static connection_type* conn_types[CONN_TYPE_MAX];
+static connection_type *conn_types[CONN_TYPE_MAX];
 
-void conntype_initialize(void) {
-	register_conntype_socket();
-	register_conntype_tls();
+void conntype_initialize(void)
+{
+    register_conntype_socket();
+    register_conntype_tls();
 }
 
-int conntype_register(connection_type* ct) {
-	const char* typename = ct->get_type(NULL);
-	connection_type* tmpct;
-	int type;
+int conntype_register(connection_type *ct)
+{
+    const char *typename = ct->get_type(NULL);
+    connection_type *tmpct;
+    int type;
 
-	/* find an empty slot to store the new connection type */
-	for (type = 0; type < CONN_TYPE_MAX; type++) {
-		tmpct = conn_types[type];
-		if (!tmpct)
-			break;
+    /* find an empty slot to store the new connection type */
+    for (type = 0; type < CONN_TYPE_MAX; type++) {
+        tmpct = conn_types[type];
+        if (!tmpct)
+            break;
 
-		/* ignore case, we really don't care "tls"/"TLS" */
-		if (!strcasecmp(typename, tmpct->get_type(NULL))) {
-			log_err("Connection types %s already registered\n", typename);
-			return -errno;
-		}
-	}
+        /* ignore case, we really don't care "tls"/"TLS" */
+        if (!strcasecmp(typename, tmpct->get_type(NULL))) {
+            log_err("Connection types %s already registered\n", typename);
+            return -errno;
+        }
+    }
 
-	if (type == CONN_TYPE_MAX)
-		return -ENOMEM;
+    if (type == CONN_TYPE_MAX)
+        return -ENOMEM;
 
-	conn_types[type] = ct;
+    conn_types[type] = ct;
 
-	if (ct->init) {
-		ct->init();
-	}
+    if (ct->init) {
+        ct->init();
+    }
 
-	log_info("Connection type %s registered\n", typename);
-	return -errno;
+    log_info("Connection type %s registered\n", typename);
+    return -errno;
 }
 
-connection_type* get_conntype_by_name(const char* typename) {
-	connection_type* ct;
+connection_type *get_conntype_by_name(const char *typename)
+{
+    connection_type *ct;
 
-	for (int type = 0; type < CONN_TYPE_MAX; type++) {
-		ct = conn_types[type];
-		if (!ct)
-			break;
+    for (int type = 0; type < CONN_TYPE_MAX; type++) {
+        ct = conn_types[type];
+        if (!ct)
+            break;
 
-		if (!strcasecmp(typename, ct->get_type(NULL)))
-			return ct;
-	}
+        if (!strcasecmp(typename, ct->get_type(NULL)))
+            return ct;
+    }
 
-	log_err("Missing implement of connection type %s\n", typename);
+    log_err("Missing implement of connection type %s\n", typename);
 
-	return NULL;
+    return NULL;
 }
 
-int get_conntype_index_by_name(const char* typename) {
-	connection_type* ct;
-	for (int type = 0; type < CONN_TYPE_MAX; type++) {
-		ct = conn_types[type];
-		if (!ct)
-			break;
+int get_conntype_index_by_name(const char *typename)
+{
+    connection_type *ct;
+    for (int type = 0; type < CONN_TYPE_MAX; type++) {
+        ct = conn_types[type];
+        if (!ct)
+            break;
 
-		if (!strcasecmp(typename, ct->get_type(NULL)))
-			return type;
-	}
+        if (!strcasecmp(typename, ct->get_type(NULL)))
+            return type;
+    }
 
-	log_err("Missing implement of connection type %s. Please re-compile atophttpd.\n", typename);
+    log_err("Missing implement of connection type %s. Please re-compile atophttpd.\n", typename);
 
-	return -1;
+    return -1;
 }
 
-int listen_to_port(int port, char* bindaddr, int af) {
-	struct addrinfo hints;
-	struct addrinfo *res = NULL, *p;
-	int ret, sockfd = -1;
-	char _port[6];
-	static const int reuse = 1;
+int listen_to_port(int port, char *bindaddr, int af)
+{
+    struct addrinfo hints;
+    struct addrinfo *res = NULL, *p;
+    int ret, sockfd = -1;
+    char _port[6];
+    static const int reuse = 1;
 
-	snprintf(_port, 6, "%d", port);
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = af;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE;
+    snprintf(_port, 6, "%d", port);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = af;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
-	if (bindaddr && !strcmp("*", bindaddr))
-		bindaddr = NULL;
-	if (af == AF_INET6 && bindaddr && !strcmp("::*", bindaddr))
-		bindaddr = NULL;
+    if (bindaddr && !strcmp("*", bindaddr))
+        bindaddr = NULL;
+    if (af == AF_INET6 && bindaddr && !strcmp("::*", bindaddr))
+        bindaddr = NULL;
 
-	ret = getaddrinfo(bindaddr, _port, &hints, &res);
-	if (ret != 0) {
-		log_err("failed to get addr info: %s\n", strerror(errno));
-		/* res is left unset on failure; nothing to free */
-		return -1;
-	}
+    ret = getaddrinfo(bindaddr, _port, &hints, &res);
+    if (ret != 0) {
+        log_err("failed to get addr info: %s\n", strerror(errno));
+        /* res is left unset on failure; nothing to free */
+        return -1;
+    }
 
-	for (p = res; p != NULL; p = p->ai_next) {
-		sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-		if (sockfd == -1) {
-			log_err("failed to get socket fd: %s\n", strerror(errno));
-			continue;
-		}
+    for (p = res; p != NULL; p = p->ai_next) {
+        sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (sockfd == -1) {
+            log_err("failed to get socket fd: %s\n", strerror(errno));
+            continue;
+        }
 
-		ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
-		if (ret < 0) {
-			log_err("socket set REUSEADDR failed: %s\n", strerror(errno));
-			goto error;
-		}
-		ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, (const char*)&reuse, sizeof(reuse));
-		if (ret < 0) {
-			log_err("socket set REUSEPORT failed: %s\n", strerror(errno));
-			goto error;
-		}
+        ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+        if (ret < 0) {
+            log_err("socket set REUSEADDR failed: %s\n", strerror(errno));
+            goto error;
+        }
+        ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, (const char *)&reuse, sizeof(reuse));
+        if (ret < 0) {
+            log_err("socket set REUSEPORT failed: %s\n", strerror(errno));
+            goto error;
+        }
 
-		ret = bind(sockfd, p->ai_addr, p->ai_addrlen);
-		if (ret == -1) {
-			log_err("socket bind failed: %s\n", strerror(errno));
-			close(sockfd);
-			sockfd = -1;
-			continue;
-		}
+        ret = bind(sockfd, p->ai_addr, p->ai_addrlen);
+        if (ret == -1) {
+            log_err("socket bind failed: %s\n", strerror(errno));
+            close(sockfd);
+            sockfd = -1;
+            continue;
+        }
 
-		ret = listen(sockfd, 128);
-		if (ret == -1) {
-			log_err("socket listen failed: %s\n", strerror(errno));
-			close(sockfd);
-			sockfd = -1;
-			continue;
-		}
+        ret = listen(sockfd, 128);
+        if (ret == -1) {
+            log_err("socket listen failed: %s\n", strerror(errno));
+            close(sockfd);
+            sockfd = -1;
+            continue;
+        }
 
-		goto end;
-	}
+        goto end;
+    }
 
 error:
-	if (sockfd != -1) {
-		close(sockfd);
-		sockfd = -1;
-	}
+    if (sockfd != -1) {
+        close(sockfd);
+        sockfd = -1;
+    }
 
 end:
-	if (res)
-		freeaddrinfo(res);
-	return sockfd;
+    if (res)
+        freeaddrinfo(res);
+    return sockfd;
 }

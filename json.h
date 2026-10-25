@@ -12,12 +12,13 @@
 #ifndef _JSON_H_
 #define _JSON_H_
 
-#include "photosyst.h"
-#include "photoproc.h"
 #include "connection.h"
+#include "photoproc.h"
+#include "photosyst.h"
 
 struct output;
 
-int jsonout(int, char *, time_t, int, struct devtstat *, struct sstat *, int, unsigned int, char, connection* connection, struct output *op);
+int jsonout(int, char *, time_t, int, struct devtstat *, struct sstat *, int, unsigned int, char,
+            connection *connection, struct output *op);
 
 #endif

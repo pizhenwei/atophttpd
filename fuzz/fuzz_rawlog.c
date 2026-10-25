@@ -31,8 +31,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "config.h"
 #include "cache.h"
+#include "config.h"
 #include "output.h"
 
 /* Pull in the parser, including its file-static rawlog_parse_one(). The "../"
@@ -51,45 +51,45 @@ static char tmppath[] = "/tmp/atophttpd_fuzz_rawlog_XXXXXX";
 
 int LLVMFuzzerInitialize(int *argc, char ***argv)
 {
-	(void)argc;
-	(void)argv;
-	uname(&utsname);
-	int fd = mkstemp(tmppath);
-	if (fd >= 0)
-		close(fd);
-	return 0;
+    (void)argc;
+    (void)argv;
+    uname(&utsname);
+    int fd = mkstemp(tmppath);
+    if (fd >= 0)
+        close(fd);
+    return 0;
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-	int fd = open(tmppath, O_WRONLY | O_TRUNC | O_CREAT | O_NOFOLLOW, 0600);
-	if (fd < 0)
-		return 0;
-	ssize_t w = write(fd, data, size);
-	(void)w;
-	close(fd);
+    int fd = open(tmppath, O_WRONLY | O_TRUNC | O_CREAT | O_NOFOLLOW, 0600);
+    if (fd < 0)
+        return 0;
+    ssize_t w = write(fd, data, size);
+    (void)w;
+    close(fd);
 
-	if (rawlog_parse_one(tmppath) == 0) {
-		struct cache_t *c = cache_get_recent();
-		if (c && c->nr_elems) {
-			char labels[] = "CPU,MEM,DSK,NET";
-			char buf[sizeof(labels)];
-			struct output op = { .output_type = OUTPUT_BUF, .done = NULL };
+    if (rawlog_parse_one(tmppath) == 0) {
+        struct cache_t *c = cache_get_recent();
+        if (c && c->nr_elems) {
+            char labels[] = "CPU,MEM,DSK,NET";
+            char buf[sizeof(labels)];
+            struct output op = {.output_type = OUTPUT_BUF, .done = NULL};
 
-			memcpy(buf, labels, sizeof(labels));
-			rawlog_get_record(c->elems[0].time, buf, NULL, &op);
-			free(op.ob.buf);
-			op.ob.buf = NULL;
-			op.ob.size = 0;
-			op.ob.offset = 0;
+            memcpy(buf, labels, sizeof(labels));
+            rawlog_get_record(c->elems[0].time, buf, NULL, &op);
+            free(op.ob.buf);
+            op.ob.buf = NULL;
+            op.ob.size = 0;
+            op.ob.offset = 0;
 
-			memcpy(buf, labels, sizeof(labels));
-			rawlog_get_record(c->elems[c->nr_elems - 1].time, buf, NULL, &op);
-			free(op.ob.buf);
-		}
-	}
+            memcpy(buf, labels, sizeof(labels));
+            rawlog_get_record(c->elems[c->nr_elems - 1].time, buf, NULL, &op);
+            free(op.ob.buf);
+        }
+    }
 
-	/* reset the global cache state so each input is parsed from scratch */
-	cache_free(tmppath);
-	return 0;
+    /* reset the global cache state so each input is parsed from scratch */
+    cache_free(tmppath);
+    return 0;
 }

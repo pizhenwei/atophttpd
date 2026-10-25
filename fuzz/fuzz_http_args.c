@@ -22,41 +22,41 @@
 
 static void drive(const char *req)
 {
-	long l;
-	http_arg_long(req, "timestamp", &l);
-	http_arg_long(req, "x", &l);
+    long l;
+    http_arg_long(req, "timestamp", &l);
+    http_arg_long(req, "x", &l);
 
-	char out[64];
-	http_arg_str(req, "labels", out, sizeof(out));
-	http_arg_str(req, "x", out, sizeof(out));
+    char out[64];
+    http_arg_str(req, "labels", out, sizeof(out));
+    http_arg_str(req, "x", out, sizeof(out));
 
-	/* a deliberately tiny buffer stresses the length-rejection boundary */
-	char tiny[4];
-	http_arg_str(req, "x", tiny, sizeof(tiny));
+    /* a deliberately tiny buffer stresses the length-rejection boundary */
+    char tiny[4];
+    http_arg_str(req, "x", tiny, sizeof(tiny));
 }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-	/* 1, the raw input used verbatim as a query string */
-	char *req = malloc(size + 1);
-	if (!req)
-		return 0;
-	memcpy(req, data, size);
-	req[size] = '\0';
-	drive(req);
+    /* 1, the raw input used verbatim as a query string */
+    char *req = malloc(size + 1);
+    if (!req)
+        return 0;
+    memcpy(req, data, size);
+    req[size] = '\0';
+    drive(req);
 
-	/* 2, the input wrapped as the value of parameter "x", which guarantees
-	 * the value-decoding path (memcpy + "%2C" rewrite) is reached */
-	char *wrapped = malloc(size + 3);
-	if (wrapped) {
-		wrapped[0] = 'x';
-		wrapped[1] = '=';
-		memcpy(wrapped + 2, data, size);
-		wrapped[size + 2] = '\0';
-		drive(wrapped);
-		free(wrapped);
-	}
+    /* 2, the input wrapped as the value of parameter "x", which guarantees
+     * the value-decoding path (memcpy + "%2C" rewrite) is reached */
+    char *wrapped = malloc(size + 3);
+    if (wrapped) {
+        wrapped[0] = 'x';
+        wrapped[1] = '=';
+        memcpy(wrapped + 2, data, size);
+        wrapped[size + 2] = '\0';
+        drive(wrapped);
+        free(wrapped);
+    }
 
-	free(req);
-	return 0;
+    free(req);
+    return 0;
 }
