@@ -356,6 +356,15 @@ function ParseJsonToHtml(node, raw_json) {
 }
 
 function preprocessJson(json) {
+    // zswap fields live in a separate ZSW block, but the SWP template renders
+    // them inside the .SWP container. Merge so block-scoped replacement finds them.
+    for (let i = 0; i < json.length; i++) {
+        if (json[i] && json[i]["ZSW"] && json[i]["SWP"]) {
+            for (let k in json[i]["ZSW"]) {
+                json[i]["SWP"][k] = json[i]["ZSW"][k];
+            }
+        }
+    }
     parseAtopHeader(json);
     parseAtopProcess(json, filter_str);
 }
@@ -403,7 +412,7 @@ function repeatAtopHtmlNode(node, arr, percputot) {
                 } else if (["stime_unit_time", "utime_unit_time", "rundelay", "blkdelay"].indexOf(j) !== -1) {
                     map[j] = ParseTimeValue(map[j], hertz, j);
                 } else if (["buffermem", "cachedrt", "cachemem", "commitlim", "committed", "freemem", "freeswap",
-                    "filepage", "physmem", "rgrow", "rsz", "shmem", "shmrss", "shmswp", "slabmem", "swcac", "totmem", "totswap", "slabreclaim", "pagetables",
+                    "filepage", "physmem", "rgrow", "rsz", "shmem", "shmrss", "shmswp", "slabmem", "swcac", "totmem", "totswap", "zswap", "zswapped", "slabreclaim", "pagetables",
                     "vexec", "vdata", "vgrow", "vlibs", "vlock", "vmem", "vstack", "wsz", "rmem", "pmem", "vswap", "tcpsk", "udpsk", "dirtymem", "active",
                     "mbm_total", "mbm_local", "inactive"].indexOf(j) !== -1) {
                     map[j] = ParseMemValue(map[j], j);
@@ -413,8 +422,7 @@ function repeatAtopHtmlNode(node, arr, percputot) {
                     map[j] = Value2ValueStr(map[j], j);
                 } else if (["cpubusy", "membusy", "diskbusy", "lvmbusy", "frag", "occupancy"].indexOf(j) !== -1) {
                     map[j] = Value2ValuePercent(map[j], j);
-                }
-                else {
+                } else {
                     map[j] = map[j];
                 }
 
