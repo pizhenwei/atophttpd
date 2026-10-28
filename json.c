@@ -37,6 +37,7 @@ static void json_print_CPL(struct output *, int, char *, struct sstat *, struct 
 static void json_print_GPU(struct output *, int, char *, struct sstat *, struct tstat *, int);
 static void json_print_MEM(struct output *, int, char *, struct sstat *, struct tstat *, int);
 static void json_print_SWP(struct output *, int, char *, struct sstat *, struct tstat *, int);
+static void json_print_ZSW(struct output *, int, char *, struct sstat *, struct tstat *, int);
 static void json_print_PAG(struct output *, int, char *, struct sstat *, struct tstat *, int);
 static void json_print_PSI(struct output *, int, char *, struct sstat *, struct tstat *, int);
 static void json_print_LVM(struct output *, int, char *, struct sstat *, struct tstat *, int);
@@ -128,11 +129,11 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs, struct devtstat *d
     struct labeldef labeldef[] = {
         {"CPU", 0, json_print_CPU}, {"cpu", 0, json_print_cpu}, {"CPL", 0, json_print_CPL},
         {"GPU", 0, json_print_GPU}, {"MEM", 0, json_print_MEM}, {"SWP", 0, json_print_SWP},
-        {"PAG", 0, json_print_PAG}, {"PSI", 0, json_print_PSI}, {"LVM", 0, json_print_LVM},
-        {"MDD", 0, json_print_MDD}, {"DSK", 0, json_print_DSK}, {"NFM", 0, json_print_NFM},
-        {"NFC", 0, json_print_NFC}, {"NFS", 0, json_print_NFS}, {"NET", 0, json_print_NET},
-        {"IFB", 0, json_print_IFB}, {"NUM", 0, json_print_NUM}, {"NUC", 0, json_print_NUC},
-        {"LLC", 0, json_print_LLC},
+        {"ZSW", 0, json_print_ZSW}, {"PAG", 0, json_print_PAG}, {"PSI", 0, json_print_PSI},
+        {"LVM", 0, json_print_LVM}, {"MDD", 0, json_print_MDD}, {"DSK", 0, json_print_DSK},
+        {"NFM", 0, json_print_NFM}, {"NFC", 0, json_print_NFC}, {"NFS", 0, json_print_NFS},
+        {"NET", 0, json_print_NET}, {"IFB", 0, json_print_IFB}, {"NUM", 0, json_print_NUM},
+        {"NUC", 0, json_print_NUC}, {"LLC", 0, json_print_LLC},
 
         {"PRG", 0, json_print_PRG}, {"PRC", 0, json_print_PRC}, {"PRM", 0, json_print_PRM},
         {"PRD", 0, json_print_PRD}, {"PRN", 0, json_print_PRN}, {"PRE", 0, json_print_PRE},
@@ -422,6 +423,24 @@ static void json_print_SWP(struct output *op, int flags, char *hp, struct sstat 
     output_samp(op, buf, buflen);
 }
 
+static void json_print_ZSW(struct output *op, int flags, char *hp, struct sstat *ss,
+                           struct tstat *ps, int nact)
+{
+    int buflen = 0;
+    char buf[LINE_BUF_SIZE];
+
+    buflen = snprintf(buf, sizeof(buf),
+                      ", %s: {"
+                      "\"zswapped\": %lld, "
+                      "\"zswap\": %lld, "
+                      "\"zswouts\": %lld, "
+                      "\"zswins\": %lld}",
+                      hp, ss->mem.zswapped * pagesize, ss->mem.zswap * pagesize, ss->mem.zswouts,
+                      ss->mem.zswins);
+
+    output_samp(op, buf, buflen);
+}
+
 static void json_print_PAG(struct output *op, int flags, char *hp, struct sstat *ss,
                            struct tstat *ps, int nact)
 {
@@ -690,36 +709,36 @@ static void json_print_NET(struct output *op, int flags, char *hp, struct sstat 
     int buflen = 0;
     char buf[LINE_BUF_SIZE];
 
-    buflen = snprintf(buf, sizeof(buf),
-                      ", \"NET_GENERAL\": {"
-                      "\"rpacketsTCP\": %lld, "
-                      "\"spacketsTCP\": %lld, "
-                      "\"inerrTCP\": %lld, "
-                      "\"oresetTCP\": %lld, "
-                      "\"activeOpensTCP\": %lld, "
-                      "\"passiveOpensTCP\": %lld, "
-                      "\"retransSegsTCP\": %lld, "
-                      "\"noportUDP\": %lld, "
-                      "\"inerrUDP\": %lld, "
-                      "\"rpacketsUDP\": %lld, "
-                      "\"spacketsUDP\": %lld, "
-                      "\"rpacketsIP\": %lld, "
-                      "\"spacketsIP\": %lld, "
-                      "\"dpacketsIP\": %lld, "
-                      "\"fpacketsIP\": %lld, "
-                      "\"icmpi\" : %lld, "
-                      "\"icmpo\" : %lld}",
-                      ss->net.tcp.InSegs, ss->net.tcp.OutSegs, ss->net.tcp.InErrs,
-                      ss->net.tcp.OutRsts, ss->net.tcp.ActiveOpens, ss->net.tcp.PassiveOpens,
-                      ss->net.tcp.RetransSegs, ss->net.udpv4.NoPorts, ss->net.udpv4.InErrors,
-                      ss->net.udpv4.InDatagrams + ss->net.udpv6.Udp6InDatagrams,
-                      ss->net.udpv4.OutDatagrams + ss->net.udpv6.Udp6OutDatagrams,
-                      ss->net.ipv4.InReceives + ss->net.ipv6.Ip6InReceives,
-                      ss->net.ipv4.OutRequests + ss->net.ipv6.Ip6OutRequests,
-                      ss->net.ipv4.InDelivers + ss->net.ipv6.Ip6InDelivers,
-                      ss->net.ipv4.ForwDatagrams + ss->net.ipv6.Ip6OutForwDatagrams,
-                      ss->net.icmpv4.InMsgs + ss->net.icmpv6.Icmp6InMsgs,
-                      ss->net.icmpv4.OutMsgs + ss->net.icmpv6.Icmp6OutMsgs);
+    buflen =
+        snprintf(buf, sizeof(buf),
+                 ", \"NET_GENERAL\": {"
+                 "\"rpacketsTCP\": %lld, "
+                 "\"spacketsTCP\": %lld, "
+                 "\"activeOpensTCP\": %lld, "
+                 "\"passiveOpensTCP\": %lld, "
+                 "\"retransSegsTCP\": %lld, "
+                 "\"inerrTCP\": %lld, "
+                 "\"oresetTCP\": %lld, "
+                 "\"rpacketsUDP\": %lld, "
+                 "\"spacketsUDP\": %lld, "
+                 "\"noportUDP\": %lld, "
+                 "\"inerrUDP\": %lld, "
+                 "\"rpacketsIP\": %lld, "
+                 "\"spacketsIP\": %lld, "
+                 "\"dpacketsIP\": %lld, "
+                 "\"fpacketsIP\": %lld, "
+                 "\"icmpi\" : %lld, "
+                 "\"icmpo\" : %lld}",
+                 ss->net.tcp.InSegs, ss->net.tcp.OutSegs, ss->net.tcp.ActiveOpens,
+                 ss->net.tcp.PassiveOpens, ss->net.tcp.RetransSegs, ss->net.tcp.InErrs,
+                 ss->net.tcp.OutRsts, ss->net.udpv4.InDatagrams + ss->net.udpv6.Udp6InDatagrams,
+                 ss->net.udpv4.OutDatagrams + ss->net.udpv6.Udp6OutDatagrams, ss->net.udpv4.NoPorts,
+                 ss->net.udpv4.InErrors, ss->net.ipv4.InReceives + ss->net.ipv6.Ip6InReceives,
+                 ss->net.ipv4.OutRequests + ss->net.ipv6.Ip6OutRequests,
+                 ss->net.ipv4.InDelivers + ss->net.ipv6.Ip6InDelivers,
+                 ss->net.ipv4.ForwDatagrams + ss->net.ipv6.Ip6OutForwDatagrams,
+                 ss->net.icmpv4.InMsgs + ss->net.icmpv6.Icmp6InMsgs,
+                 ss->net.icmpv4.OutMsgs + ss->net.icmpv6.Icmp6OutMsgs);
     output_samp(op, buf, buflen);
 
     char br[LEN_HP_SIZE];
@@ -730,25 +749,35 @@ static void json_print_NET(struct output *op, int flags, char *hp, struct sstat 
         if (i > 0) {
             output_samp(op, ", ", 2);
         }
-        buflen = snprintf(buf, sizeof(buf),
-                          "{\"name\": \"%.19s\", "
-                          "\"rpack\": %lld, "
-                          "\"rbyte\": %lld, "
-                          "\"rerrs\": %lld, "
-                          "\"rdrops\": %lld, "
-                          "\"spack\": %lld, "
-                          "\"sbyte\": %lld, "
-                          "\"serrs\": %lld, "
-                          "\"sdrops\": %lld, "
-                          "\"speed\": \"%ld\", "
-                          "\"coll\": %lld, "
-                          "\"multi\": %lld, "
-                          "\"duplex\": %d}",
-                          ss->intf.intf[i].name, ss->intf.intf[i].rpack, ss->intf.intf[i].rbyte,
-                          ss->intf.intf[i].rerrs, ss->intf.intf[i].rdrop, ss->intf.intf[i].spack,
-                          ss->intf.intf[i].sbyte, ss->intf.intf[i].serrs, ss->intf.intf[i].sdrop,
-                          ss->intf.intf[i].speed, ss->intf.intf[i].scollis,
-                          ss->intf.intf[i].rmultic, ss->intf.intf[i].duplex);
+        buflen =
+            snprintf(buf, sizeof(buf),
+                     "{\"name\": \"%.19s\", "
+                     "\"rpack\": %lld, "
+                     "\"rbyte\": %lld, "
+                     "\"rerrs\": %lld, "
+                     "\"rdrops\": %lld, "
+                     "\"rfifo\": %lld, "
+                     "\"rframe\": %lld, "
+                     "\"rcompr\": %lld, "
+                     "\"multi\": %lld, "
+                     "\"spack\": %lld, "
+                     "\"sbyte\": %lld, "
+                     "\"serrs\": %lld, "
+                     "\"sdrops\": %lld, "
+                     "\"sfifo\": %lld, "
+                     "\"scollis\": %lld, "
+                     "\"scarrier\": %lld, "
+                     "\"scompr\": %lld, "
+                     "\"speed\": \"%ld\", "
+                     "\"coll\": %lld, "
+                     "\"duplex\": %d}",
+                     ss->intf.intf[i].name, ss->intf.intf[i].rpack, ss->intf.intf[i].rbyte,
+                     ss->intf.intf[i].rerrs, ss->intf.intf[i].rdrop, ss->intf.intf[i].rfifo,
+                     ss->intf.intf[i].rframe, ss->intf.intf[i].rcompr, ss->intf.intf[i].rmultic,
+                     ss->intf.intf[i].spack, ss->intf.intf[i].sbyte, ss->intf.intf[i].serrs,
+                     ss->intf.intf[i].sdrop, ss->intf.intf[i].sfifo, ss->intf.intf[i].scollis,
+                     ss->intf.intf[i].scarrier, ss->intf.intf[i].scompr, ss->intf.intf[i].speed,
+                     ss->intf.intf[i].scollis, ss->intf.intf[i].duplex);
         output_samp(op, buf, buflen);
     }
 
