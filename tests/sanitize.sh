@@ -9,7 +9,7 @@
 #
 set -euo pipefail
 
-ATOP_VERSION="${ATOP_VERSION:-v2.11.1}"
+ATOP_VERSION="${ATOP_VERSION:-v2.12.0}"
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"

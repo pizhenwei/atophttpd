@@ -18,10 +18,10 @@ CLANGFMT = clang-format-18
 # atop version atophttpd is compiled against. It MUST match the atop release
 # installed on the target host, because atophttpd reads atop's version-specific
 # binary raw-log format. The source targets the cgroup-v2 raw-log generation
-# (roughly atop 2.9-2.11); v2.11.1 (Debian trixie) is the default and is
-# CI-tested. Override with another tag of the same generation, e.g.:
-#   make ATOP_VERSION=v2.10.0
-ATOP_VERSION ?= v2.11.1
+# (roughly atop 2.9-2.12); v2.12.0 is the default and is CI-tested. Override
+# with another tag of the same generation, e.g.:
+#   make ATOP_VERSION=v2.11.1
+ATOP_VERSION ?= v2.12.0
 
 ifneq (,$(filter $(USE_TLS),yes YES y Y 1))
 	CFLAGS += -DUSE_TLS

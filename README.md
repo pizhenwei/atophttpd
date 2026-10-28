@@ -34,19 +34,19 @@ batch.
 
 ### run atophttpd daemon:
 ```
- make                      # builds against atop v2.11.1 by default
+ make                      # builds against atop v2.12.0 by default
  ./atophttpd -d #run in daemon only on localhost
  ./atophttpd -d -a ${IP} #run in daemon on ip
 ```
 
 **Match the atop version.** atophttpd reads atop's *version-specific* binary
 raw-log format, so it must be compiled against the same atop release that runs
-on the host. The build targets atop **v2.11.1** by default (Debian trixie).
+on the host. The build targets atop **v2.12.0** by default.
 Other releases of the same generation (the cgroup-v2 raw-log format, roughly
-atop 2.9–2.11) can be selected via `ATOP_VERSION`:
+atop 2.9–2.12) can be selected via `ATOP_VERSION`:
 ```
- make                        # atop v2.11.1 (default, CI-tested)
- make ATOP_VERSION=v2.10.0   # another 2.9-2.11 tag of the submodule
+ make                        # atop v2.12.0 (default, CI-tested)
+ make ATOP_VERSION=v2.11.1   # another 2.9-2.12 tag of the submodule
 ```
 Older generations (e.g. atop 2.8 on Debian bookworm) use a different struct
 and record layout; retargeting to them requires minor source changes in
@@ -134,7 +134,7 @@ via GitHub Actions (`.github/workflows/ci.yml`).
 
 ## Limitations
 atophttpd is compiled against **one** atop release at a time (default
-`v2.11.1`) and reads only raw-logs produced by that same release; it does not
+`v2.12.0`) and reads only raw-logs produced by that same release; it does not
 parse logs from a different atop version. Re-build with the matching
 `ATOP_VERSION` for your host, or convert old logs with atop's own
 `atopconvert` tool.
