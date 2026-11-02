@@ -1,7 +1,11 @@
-# Maintainer
-- zhenwei pi <zhenwei.pi@linux.dev> / <pizhenwei@tensorfer.com> (HTTP backend)
+# Maintainers
+- Zhenwei Pi <zhenwei.pi@linux.dev> / <pizhenwei@tensorfer.com> (HTTP backend)
 - Enhua Zhou <meinhardzh@gmail.com> (HTTP frontend)
 
-# Patch is always welcomed!
-- Sending patch to maintainer by email
-- Create a PR on github
+# Contributors
+- Elena FRISON <e_gavrilova_frison@zohomail.eu>
+
+# Contributing
+Patch contributions are always welcome.
+- Send patches to the maintainers by email.
+- Open a pull request on GitHub.
