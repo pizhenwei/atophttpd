@@ -61,6 +61,9 @@ static struct sstat *make_sstat(int cpu0_has_freq)
     /* CPU: two cpus, so json_calc_freqscale is driven with different
      * combinations of maxfreq / ticks / cnt across the two invocations. */
     ss->cpu.nrcpu = 2;
+    ss->cpu.maxcpu = 2;
+    ss->cpu.cpu[0].online = 1;
+    ss->cpu.cpu[1].online = 1;
     if (cpu0_has_freq) {
         ss->cpu.cpu[0].freqcnt.maxfreq = 3000;
         ss->cpu.cpu[0].freqcnt.cnt = 6000;
@@ -256,12 +259,12 @@ static void test_jsonout_all_labels(void)
 static void check_zswap_and_network(struct output *op, connection *conn)
 {
     const char *fields[] = {
-        "\"ZSW\": {",     "\"zswap\": 8192,", "\"zswapped\": 12288,", "\"zswouts\": 5,",
+        "\"ZSW\": {",      "\"zswap\": 8192,", "\"zswapped\": 12288,", "\"zswouts\": 5,",
         "\"zswins\": 7}",  "\"rfifo\": 11,",   "\"rframe\": 13,",      "\"rcompr\": 17,",
         "\"sfifo\": 19,",  "\"scollis\": 23,", "\"coll\": 23,",        "\"scarrier\": 29,",
         "\"scompr\": 31,",
     };
-    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i)
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++)
         CHECK(strstr(op->ob.buf, fields[i]) != NULL);
 }
 
@@ -286,6 +289,70 @@ static void test_jsonout_zswap_and_network(void)
     free(op.ob.buf);
 }
 
+static void check_sparse_cpus(struct output *op, connection *conn)
+{
+    CHECK(strstr(op->ob.buf, "\"nrcpu\": 2,") != NULL);
+    CHECK(strstr(op->ob.buf, "\"freq\": 2000, \"freqperc\": 50,") != NULL);
+    CHECK(strstr(op->ob.buf, "\"cpu\": [{\"cpuid\": 1,") != NULL);
+    CHECK(strstr(op->ob.buf, "}, {\"cpuid\": 3,") != NULL);
+    CHECK(strstr(op->ob.buf, "\"cpuid\": 0,") == NULL);
+    CHECK(strstr(op->ob.buf, "\"cpuid\": 2,") == NULL);
+}
+
+static void test_jsonout_offline_cpus(void)
+{
+    struct sstat *ss = make_sstat(1);
+    ss->cpu.maxcpu = 4;
+    for (int i = 0; i < 4; i++) {
+        ss->cpu.cpu[i].online = i % 2;
+        ss->cpu.cpu[i].freqcnt.maxfreq = i % 2 ? 4000 : 0;
+        ss->cpu.cpu[i].freqcnt.cnt = i * 1000;
+        ss->cpu.cpu[i].freqcnt.ticks = 1;
+    }
+    char labels[] = "CPU,cpu";
+    struct output op = {.output_type = OUTPUT_BUF, .done = check_sparse_cpus};
+    CHECK_EQ_INT(jsonout(0, labels, 1, 1, make_devtstat(), ss, 0, 0, 0, NULL, &op), 0);
+    free(op.ob.buf);
+}
+
+static void test_jsonout_invalid_cpu_count(void)
+{
+    const int counts[] = {-1, MAXCPU + 1};
+    for (size_t i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+        struct sstat *ss = make_sstat(1);
+        ss->cpu.maxcpu = counts[i];
+        char labels[] = "CPU,cpu";
+        struct output op = {.output_type = OUTPUT_BUF};
+        CHECK(jsonout(0, labels, 1, 1, make_devtstat(), ss, 0, 0, 0, NULL, &op) != 0);
+        free(op.ob.buf);
+    }
+}
+
+static void check_gpu_averages(struct output *op, connection *conn)
+{
+    CHECK(strstr(op->ob.buf, "\"gpubusy\": 50, \"membusy\": 30,") != NULL);
+    CHECK(strstr(op->ob.buf, "\"gpubusy\": -1, \"membusy\": -1,") != NULL);
+    CHECK(strstr(op->ob.buf, "\"gpubusy\": 0, \"membusy\": 0,") != NULL);
+}
+
+static void test_jsonout_gpu_averages(void)
+{
+    const count_t samples[] = {3, 1LL << 32};
+    for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        struct devtstat *dt = make_devtstat();
+        g_tasks[0].gpu.samples = samples[i];
+        g_tasks[0].gpu.gpubusycum = 50 * samples[i];
+        g_tasks[0].gpu.membusycum = 30 * samples[i];
+        g_tasks[1].gpu.samples = samples[i];
+        g_tasks[1].gpu.gpubusycum = -1;
+        g_tasks[1].gpu.membusycum = -1;
+        /* Task 2 has no samples yet. */
+        char labels[] = "PRE";
+        struct output op = {.output_type = OUTPUT_BUF, .done = check_gpu_averages};
+        CHECK_EQ_INT(jsonout(GPUSTAT, labels, 1, 1, dt, make_sstat(1), 0, 0, 0, NULL, &op), 0);
+        free(op.ob.buf);
+    }
+}
 
 /* Second configuration to cover the remaining json_calc_freqscale branches
  * (no maxfreq) and the per-cpu "nothing known" case. */
@@ -385,6 +452,9 @@ int main(void)
     TEST_SUITE_BEGIN("json");
     RUN_TEST(test_jsonout_all_labels);
     RUN_TEST(test_jsonout_zswap_and_network);
+    RUN_TEST(test_jsonout_offline_cpus);
+    RUN_TEST(test_jsonout_invalid_cpu_count);
+    RUN_TEST(test_jsonout_gpu_averages);
     RUN_TEST(test_jsonout_freqscale_variants);
     RUN_TEST(test_jsonout_hidecmdline);
     RUN_TEST(test_jsonout_single_label);

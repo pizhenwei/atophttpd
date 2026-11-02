@@ -463,6 +463,11 @@ function Value2ValueStr(value, indicatorName) {
 }
 
 function Value2ValuePercent(value, indicatorName) {
+    if (value === -1 && ["gpupercnow", "mempercnow", "gpuperccum", "memperccum",
+        "gpubusy", "gpumembusy"].includes(indicatorName)) {
+        return "-";
+    }
+
     if (value === "-" || value === "" || value === null || isNaN(value)) {
         return "-";
     }

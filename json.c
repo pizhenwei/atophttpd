@@ -147,6 +147,13 @@ int jsonout(int flags, char *pd, time_t curtime, int numsecs, struct devtstat *d
         return ret;
     }
 
+    if (sstat->cpu.maxcpu < 0 || sstat->cpu.maxcpu > MAXCPU) {
+        char err[] = "invalid CPU count\n";
+        output_samp(op, err, strlen(err));
+        output_samp_done(op, conn);
+        return -EINVAL;
+    }
+
     buflen = snprintf(general, sizeof(general),
                       "{\"host\": \"%s\", "
                       "\"timestamp\": %ld, "
@@ -222,11 +229,15 @@ static void json_print_CPU(struct output *op, int flags, char *hp, struct sstat 
     char buf[LINE_BUF_SIZE];
 
     // calculate average clock frequency
-    for (i = 0; i < ss->cpu.nrcpu; i++) {
+    for (i = 0; i < ss->cpu.maxcpu; i++) {
+        if (!ss->cpu.cpu[i].online)
+            continue;
+        if (!maxfreq)
+            maxfreq = ss->cpu.cpu[i].freqcnt.maxfreq;
+
         cnt += ss->cpu.cpu[i].freqcnt.cnt;
         ticks += ss->cpu.cpu[i].freqcnt.ticks;
     }
-    maxfreq = ss->cpu.cpu[0].freqcnt.maxfreq;
     json_calc_freqscale(maxfreq, cnt, ticks, &freq, &freqperc);
 
     if (ss->cpu.all.instr == 1) {
@@ -275,13 +286,16 @@ static void json_print_cpu(struct output *op, int flags, char *hp, struct sstat 
     buflen = sprintf(br, ", %s: [", hp);
     output_samp(op, br, buflen);
 
-    for (i = 0; i < ss->cpu.nrcpu; i++) {
-        if (i > 0) {
+    int printed = 0;
+    for (i = 0; i < ss->cpu.maxcpu; i++) {
+        if (!ss->cpu.cpu[i].online)
+            continue;
+        if (printed++) {
             output_samp(op, ", ", 2);
         }
         cnt = ss->cpu.cpu[i].freqcnt.cnt;
         ticks = ss->cpu.cpu[i].freqcnt.ticks;
-        maxfreq = ss->cpu.cpu[0].freqcnt.maxfreq;
+        maxfreq = ss->cpu.cpu[i].freqcnt.maxfreq;
 
         json_calc_freqscale(maxfreq, cnt, ticks, &freq, &freqperc);
 
@@ -1159,7 +1173,7 @@ static void json_print_PRE(struct output *op, int flags, char *hp, struct sstat 
         return;
 
     int i;
-    int samples;
+    count_t samples;
     int buflen = 0;
     char buf[LINE_BUF_SIZE];
 
@@ -1173,10 +1187,8 @@ static void json_print_PRE(struct output *op, int flags, char *hp, struct sstat 
         if (i > 0) {
             output_samp(op, ", ", 2);
         }
-        /* atop v2.13 reports cumulative gpu/memory busy; divide by the
-         * number of samples to keep the historical "average percentage"
-         * semantics of gpubusy/membusy (same as atop's own json.c). */
-        samples = ps->gpu.samples ? ps->gpu.samples : 1;
+        /* Keep average percentages and the -1 (unavailable) sentinel. */
+        samples = ps->gpu.samples > 0 ? ps->gpu.samples : 1;
         buflen =
             snprintf(buf, sizeof(buf),
                      "{\"pid\": %d, "
@@ -1189,8 +1201,9 @@ static void json_print_PRE(struct output *op, int flags, char *hp, struct sstat 
                      "\"memcum\": %lld, "
                      "\"sample\": %lld}",
                      ps->gen.pid, ps->gpu.state == '\0' ? 'N' : ps->gpu.state, ps->gpu.nrgpus,
-                     ps->gpu.gpulist, ps->gpu.gpubusycum / samples, ps->gpu.membusycum / samples,
-                     ps->gpu.memnow, ps->gpu.memcum, ps->gpu.samples);
+                     ps->gpu.gpulist, ps->gpu.gpubusycum == -1 ? -1 : ps->gpu.gpubusycum / samples,
+                     ps->gpu.membusycum == -1 ? -1 : ps->gpu.membusycum / samples, ps->gpu.memnow,
+                     ps->gpu.memcum, ps->gpu.samples);
         output_samp(op, buf, buflen);
     }
 
