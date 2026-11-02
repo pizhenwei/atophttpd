@@ -28,8 +28,7 @@ ifneq (,$(filter $(USE_TLS),yes YES y Y 1))
 	LDLIBS += -lssl -lcrypto
 endif
 
-all: submodule bin
-	$(CC) -o $(BIN) $(OBJS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+all: bin
 
 install: bin
 	install -D -s $(BIN) $(PREFIX)/usr/bin/$(BIN)
@@ -39,6 +38,8 @@ install: bin
 
 deb: bin
 	@sh packaging/debian/makedeb.sh "$(CURDIR)"
+
+$(OBJS): | submodule
 
 bin: $(OBJS)
 	$(CC) -o $(BIN) $(OBJS) $(CFLAGS) $(LDFLAGS) $(LDLIBS)
