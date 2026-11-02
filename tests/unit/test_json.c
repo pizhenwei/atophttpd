@@ -253,6 +253,40 @@ static void test_jsonout_all_labels(void)
     run_json_tc(&tc);
 }
 
+static void check_zswap_and_network(struct output *op, connection *conn)
+{
+    const char *fields[] = {
+        "\"ZSW\": {",     "\"zswap\": 8192,", "\"zswapped\": 12288,", "\"zswouts\": 5,",
+        "\"zswins\": 7}",  "\"rfifo\": 11,",   "\"rframe\": 13,",      "\"rcompr\": 17,",
+        "\"sfifo\": 19,",  "\"scollis\": 23,", "\"coll\": 23,",        "\"scarrier\": 29,",
+        "\"scompr\": 31,",
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i)
+        CHECK(strstr(op->ob.buf, fields[i]) != NULL);
+}
+
+static void test_jsonout_zswap_and_network(void)
+{
+    struct sstat *ss = make_sstat(1);
+    ss->mem.zswap = 2;
+    ss->mem.zswapped = 3;
+    ss->mem.zswouts = 5;
+    ss->mem.zswins = 7;
+    ss->intf.intf[0].rfifo = 11;
+    ss->intf.intf[0].rframe = 13;
+    ss->intf.intf[0].rcompr = 17;
+    ss->intf.intf[0].sfifo = 19;
+    ss->intf.intf[0].scollis = 23;
+    ss->intf.intf[0].scarrier = 29;
+    ss->intf.intf[0].scompr = 31;
+
+    char labels[] = "ZSW,NET";
+    struct output op = {.output_type = OUTPUT_BUF, .done = check_zswap_and_network};
+    CHECK_EQ_INT(jsonout(0, labels, 1, 1, make_devtstat(), ss, 0, 0, 0, NULL, &op), 0);
+    free(op.ob.buf);
+}
+
+
 /* Second configuration to cover the remaining json_calc_freqscale branches
  * (no maxfreq) and the per-cpu "nothing known" case. */
 static void test_jsonout_freqscale_variants(void)
@@ -350,6 +384,7 @@ int main(void)
     uname(&utsname);
     TEST_SUITE_BEGIN("json");
     RUN_TEST(test_jsonout_all_labels);
+    RUN_TEST(test_jsonout_zswap_and_network);
     RUN_TEST(test_jsonout_freqscale_variants);
     RUN_TEST(test_jsonout_hidecmdline);
     RUN_TEST(test_jsonout_single_label);
