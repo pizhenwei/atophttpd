@@ -10,7 +10,7 @@
 set -euo pipefail
 
 THRESHOLD="${1:-90}"
-ATOP_VERSION="${ATOP_VERSION:-v2.12.0}"
+ATOP_VERSION="${ATOP_VERSION:-v2.13.0}"
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"

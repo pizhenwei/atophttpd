@@ -37,7 +37,21 @@ function parseAtopHeader(json) {
     json[0]["cpu"] = cpulist.slice(0, temp_cpu_show_num);
 
     //GPU line
-    //TODO
+    gpulist = json[0]["GPU"];
+    if (gpulist !== undefined) {
+        gpulist.forEach(function (gpu, index) {
+            gpu["nr"] = index + 1;
+            // atop reports GPU memory in KiB; ParseMemValue expects bytes
+            gpu["memtotnow"] = gpu["memtotnow"] * 1024;
+            gpu["memusenow"] = gpu["memusenow"] * 1024;
+            gpu["memusecum"] = gpu["memusecum"] * 1024;
+        })
+        var temp_gpu_show_num = gpu_show_num
+        if (temp_gpu_show_num > gpulist.length) {
+            temp_gpu_show_num = gpulist.length;
+        }
+        json[0]["GPU"] = gpulist.slice(0, temp_gpu_show_num);
+    }
 
     //CPL line
     json[0]["CPL"]["nrcpu"] = CPUEntry["nrcpu"];
@@ -154,11 +168,13 @@ function parseAtopProcess(json, filter_str) {
     prm = json[0]["PRM"];
     prd = json[0]["PRD"];
     prg = json[0]["PRG"];
+    pre = json[0]["PRE"];
 
     prcmap = ArrayToMap(prc);
     prmmap = ArrayToMap(prm);
     prdmap = ArrayToMap(prd);
     prgmap = ArrayToMap(prg);
+    premap = ArrayToMap(pre);
 
     hprc = new Object();
     hprc["proc_count"] = 0;
@@ -287,6 +303,26 @@ function parseAtopProcess(json, filter_str) {
         iprd["cwsz"] = iprd["cwsz"] * 512;
 
         aggregate_pr = Object.assign(iprc, iprm, iprd, iprg);
+
+        // per-process GPU record (PRE). Keep the raw payload keys but prefix
+        // "membusy" so it cannot overwrite the process memory percentage that
+        // PRM computes above (the atop v2.13 GPU record also carries memnow/memcum).
+        ipre = premap.get(index);
+        if (ipre !== undefined) {
+            aggregate_pr["gpustate"] = ipre["gpustate"];
+            aggregate_pr["nrgpus"] = ipre["nrgpus"];
+            aggregate_pr["gpulist"] = ipre["gpulist"];
+            aggregate_pr["gpubusy"] = ipre["gpubusy"];
+            aggregate_pr["gpumembusy"] = ipre["membusy"];
+            aggregate_pr["gpumemnow"] = ipre["memnow"] * 1024;
+            aggregate_pr["gpumemcum"] = ipre["memcum"] * 1024;
+            aggregate_pr["gpusample"] = ipre["sample"];
+        } else {
+            // no GPU record: provide placeholders so templates never render
+            // raw "{gpubusy}" text for processes that never touched a GPU
+            aggregate_pr["gpubusy"] = "-";
+            aggregate_pr["gpumembusy"] = "-";
+        }
 
         aggregate_pr_map.set(index, aggregate_pr);
     })
@@ -427,11 +463,17 @@ function Value2ValueStr(value, indicatorName) {
 }
 
 function Value2ValuePercent(value, indicatorName) {
+    if (value === "-" || value === "" || value === null || isNaN(value)) {
+        return "-";
+    }
     return value + "%";
 }
 
 function ArrayToMap(array) {
     map = new Map();
+    if (array === undefined || array === null) {
+        return map;
+    }
     for (i of array) {
         map.set(i["pid"], i);
     }

@@ -237,7 +237,7 @@ static void json_print_CPU(struct output *op, int flags, char *hp, struct sstat 
     buflen = snprintf(buf, sizeof(buf),
                       ", %s: {"
                       "\"hertz\": %u, "
-                      "\"nrcpu\": %lld, "
+                      "\"nrcpu\": %d, "
                       "\"stime\": %lld, "
                       "\"utime\": %lld, "
                       "\"ntime\": %lld, "
@@ -1159,6 +1159,7 @@ static void json_print_PRE(struct output *op, int flags, char *hp, struct sstat 
         return;
 
     int i;
+    int samples;
     int buflen = 0;
     char buf[LINE_BUF_SIZE];
 
@@ -1172,19 +1173,24 @@ static void json_print_PRE(struct output *op, int flags, char *hp, struct sstat 
         if (i > 0) {
             output_samp(op, ", ", 2);
         }
-        buflen = snprintf(buf, sizeof(buf),
-                          "{\"pid\": %d, "
-                          "\"gpustate\": \"%c\", "
-                          "\"nrgpus\": %d, "
-                          "\"gpulist\": \"%x\", "
-                          "\"gpubusy\": %d, "
-                          "\"membusy\": %d, "
-                          "\"memnow\": %lld, "
-                          "\"memcum\": %lld, "
-                          "\"sample\": %lld}",
-                          ps->gen.pid, ps->gpu.state == '\0' ? 'N' : ps->gpu.state, ps->gpu.nrgpus,
-                          ps->gpu.gpulist, ps->gpu.gpubusy, ps->gpu.membusy, ps->gpu.memnow,
-                          ps->gpu.memcum, ps->gpu.sample);
+        /* atop v2.13 reports cumulative gpu/memory busy; divide by the
+         * number of samples to keep the historical "average percentage"
+         * semantics of gpubusy/membusy (same as atop's own json.c). */
+        samples = ps->gpu.samples ? ps->gpu.samples : 1;
+        buflen =
+            snprintf(buf, sizeof(buf),
+                     "{\"pid\": %d, "
+                     "\"gpustate\": \"%c\", "
+                     "\"nrgpus\": %d, "
+                     "\"gpulist\": \"%x\", "
+                     "\"gpubusy\": %lld, "
+                     "\"membusy\": %lld, "
+                     "\"memnow\": %lld, "
+                     "\"memcum\": %lld, "
+                     "\"sample\": %lld}",
+                     ps->gen.pid, ps->gpu.state == '\0' ? 'N' : ps->gpu.state, ps->gpu.nrgpus,
+                     ps->gpu.gpulist, ps->gpu.gpubusycum / samples, ps->gpu.membusycum / samples,
+                     ps->gpu.memnow, ps->gpu.memcum, ps->gpu.samples);
         output_samp(op, buf, buflen);
     }
 

@@ -414,13 +414,14 @@ function repeatAtopHtmlNode(node, arr, percputot) {
                 } else if (["buffermem", "cachedrt", "cachemem", "commitlim", "committed", "freemem", "freeswap",
                     "filepage", "physmem", "rgrow", "rsz", "shmem", "shmrss", "shmswp", "slabmem", "swcac", "totmem", "totswap", "zswap", "zswapped", "slabreclaim", "pagetables",
                     "vexec", "vdata", "vgrow", "vlibs", "vlock", "vmem", "vstack", "wsz", "rmem", "pmem", "vswap", "tcpsk", "udpsk", "dirtymem", "active",
-                    "mbm_total", "mbm_local", "inactive"].indexOf(j) !== -1) {
+                    "mbm_total", "mbm_local", "inactive", "memtotnow", "memusenow", "memusecum", "gpumemnow", "gpumemcum"].indexOf(j) !== -1) {
                     map[j] = ParseMemValue(map[j], j);
                 } else if (["rbyte", "sbyte", "speed"].indexOf(j) !== -1) {
                     map[j] = ParseBandwidth(map[j], j);
                 } else if (["minflt", "majflt"].indexOf(j) !== -1) {
                     map[j] = Value2ValueStr(map[j], j);
-                } else if (["cpubusy", "membusy", "diskbusy", "lvmbusy", "frag", "occupancy"].indexOf(j) !== -1) {
+                } else if (["cpubusy", "membusy", "diskbusy", "lvmbusy", "frag", "occupancy",
+                    "gpupercnow", "mempercnow", "gpuperccum", "memperccum", "gpubusy", "gpumembusy"].indexOf(j) !== -1) {
                     map[j] = Value2ValuePercent(map[j], j);
                 } else {
                     map[j] = map[j];

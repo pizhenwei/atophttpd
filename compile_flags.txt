@@ -1,4 +1,0 @@
--I.
--Iatop
--std=gnu11
--Wall
