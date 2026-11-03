@@ -59,13 +59,18 @@ $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                            
 $CC $CFLAGS -Wl,--wrap=write,--wrap=writev tests/unit/test_connection.c connection.o socket.o tls.o log.o          -o tests/unit/test_connection $LDLIBS
 $CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o version.o -o tests/unit/test_rawlog $LDLIBS
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o                  -o tests/unit/test_json      $LDLIBS
+# TLS backend test: #includes tls.c with -DUSE_TLS (so the real ssl_write_all is
+# sanitized, not the stub) and interposes on SSL_write/SSL_get_error. Reuses the
+# already-sanitized connection/socket/log objects.
+$CC $CFLAGS -DUSE_TLS -Wl,--wrap=SSL_write,--wrap=SSL_get_error \
+	tests/unit/test_tls.c connection.o socket.o log.o -o tests/unit/test_tls $LDLIBS -lssl -lcrypto
 
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
 
 echo ">> running sanitized unit tests (leak detection on)"
 export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1"
 rc=0
-for t in test_cache test_output test_http_args test_connection test_rawlog test_json; do
+for t in test_cache test_output test_http_args test_connection test_rawlog test_json test_tls; do
 	echo "--- $t ---"
 	RAWLOG_SAMPLE="$RAWLOG_SAMPLE" "./tests/unit/$t" || rc=1
 done

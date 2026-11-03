@@ -189,6 +189,43 @@ static void conn_close_tls(connection *conn)
     return;
 }
 
+/* Cap each SSL_write() at one TLS record so the deadline below stays
+ * enforceable: a lone SSL_write() of the whole buffer won't return while a
+ * slow-but-steady reader keeps draining, overshooting the deadline. */
+#define TLS_WRITE_CHUNK (16 * 1024)
+
+static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
+{
+    size_t sent = 0;
+    long long deadline = conn_now_ms() + CONN_SEND_TIMEOUT_MS;
+
+    /* Default-mode SSL_write writes the whole chunk or none; retry the same
+     * args on WANT_WRITE/WANT_READ until sent or the deadline passes. */
+    while (sent < len) {
+        if (conn_now_ms() >= deadline)
+            break;
+
+        size_t chunk = len - sent;
+        if (chunk > TLS_WRITE_CHUNK)
+            chunk = TLS_WRITE_CHUNK;
+
+        int n = SSL_write(ssl, buf + sent, (int)chunk);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+
+        int err = SSL_get_error(ssl, n);
+        if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ)
+            continue;
+        if (sent == 0)
+            return -EIO;
+        break;
+    }
+
+    return (int)sent;
+}
+
 static int conn_write_tls(connection *conn, const void *data, size_t data_len)
 {
     tls_connection *tls_conn = (tls_connection *)conn;
@@ -196,13 +233,7 @@ static int conn_write_tls(connection *conn, const void *data, size_t data_len)
         return -EINVAL;
     }
 
-    int ret = SSL_write(tls_conn->ssl, data, data_len);
-    if (ret < 0) {
-        perror("SSL write error");
-        return -errno;
-    }
-
-    return 0;
+    return ssl_write_all(tls_conn->ssl, data, data_len);
 }
 
 static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt)
@@ -230,11 +261,7 @@ static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt
         offset += iov[i].iov_len;
     }
 
-    int ret = SSL_write(tls_conn->ssl, ssl_buf, iov_bytes_len);
-    if (ret < 0) {
-        perror("SSL writev error");
-        ret = -errno;
-    }
+    int ret = ssl_write_all(tls_conn->ssl, ssl_buf, iov_bytes_len);
 
     free(ssl_buf);
     return ret;
