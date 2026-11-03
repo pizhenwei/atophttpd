@@ -440,9 +440,8 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *
         goto free_name;
     }
 
-    ret = lseek(fd, off, SEEK_CUR);
-    if (ret < 0) {
-        log_err("%s: move offset failed\n", __func__);
+    if (lseek(fd, off, SEEK_SET) == (off_t)-1) {
+        log_err("%s: move offset failed: %m\n", __func__);
         ret = -errno;
         goto close_fd;
     }

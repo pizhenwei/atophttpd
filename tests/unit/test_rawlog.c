@@ -350,6 +350,114 @@ static void test_get_record_empty_cache(void)
     free(op.ob.buf);
 }
 
+static int copy_sample_to(const char *path);
+
+/*
+ * A cache entry can legitimately point past 2 GiB in a long raw-log. Decoding
+ * such a record must still succeed: the file offset is an off_t, so the seek in
+ * rawlog_get_record has to preserve its full 64-bit width. Earlier code stored
+ * lseek()'s result in an int, so an offset >= 2 GiB wrapped to a negative value
+ * and the lookup failed spuriously. We borrow one real, decodable record from
+ * the sample, drop it into a sparse file at a 2 GiB offset, inject a matching
+ * cache entry and require the decode to succeed. Skipped without a sample.
+ */
+static void test_get_record_large_offset(void)
+{
+    struct cache_t *stale;
+    while ((stale = cache_get_recent()) != NULL)
+        cache_free(stale->name);
+
+    char dir[256];
+    tf_tmpl(dir, sizeof(dir), "atophttpd_bigoff_XXXXXX");
+    if (!mkdtemp(dir)) {
+        CHECK(0);
+        return;
+    }
+    char srcpath[512];
+    snprintf(srcpath, sizeof(srcpath), "%s/atop_src", dir);
+    if (!copy_sample_to(srcpath)) {
+        printf("    (skipped: no RAWLOG_SAMPLE provided)\n");
+        return;
+    }
+
+    /* parse the copy so we know where its first record lives and its time */
+    CHECK_EQ_INT(rawlog_parse_all(dir), 0);
+    const struct cache_t *pc = cache_find(srcpath);
+    CHECK(pc != NULL);
+    if (!pc || !pc->nr_elems)
+        return;
+    time_t rec_time = pc->elems[0].time;
+    off_t rec_off = pc->elems[0].off;
+    int hflags = pc->flags;
+
+    /* read the full record (fixed header + all four compressed blobs) */
+    int in = open(srcpath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    CHECK(in >= 0);
+    if (in < 0)
+        return;
+    struct rawrecord rr;
+    if (pread(in, &rr, sizeof(rr), rec_off) != (ssize_t)sizeof(rr)) {
+        CHECK(0);
+        close(in);
+        return;
+    }
+    size_t total = sizeof(rr) + rr.scomplen + rr.pcomplen + rr.ccomplen + rr.icomplen;
+    unsigned char *recbuf = malloc(total);
+    CHECK(recbuf != NULL);
+    if (!recbuf) {
+        close(in);
+        return;
+    }
+    ssize_t rn = pread(in, recbuf, total, rec_off);
+    close(in);
+    CHECK(rn == (ssize_t)total);
+    if (rn != (ssize_t)total) {
+        free(recbuf);
+        return;
+    }
+
+    /* drop that record at a >2 GiB offset into a sparse file */
+    const off_t big_off = (off_t)1 << 31; /* 2 GiB: overflows a signed int */
+    char sparsepath[512];
+    snprintf(sparsepath, sizeof(sparsepath), "%s/atop_sparse", dir);
+    int out = open(sparsepath, O_CREAT | O_WRONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    CHECK(out >= 0);
+    if (out < 0) {
+        free(recbuf);
+        return;
+    }
+    int ok = (pwrite(out, recbuf, total, big_off) == (ssize_t)total);
+    close(out);
+    free(recbuf);
+    if (!ok) {
+        printf("    (skipped: filesystem rejected a 2 GiB sparse write)\n");
+        unlink(sparsepath);
+        return;
+    }
+
+    /* inject a cache entry pointing the decoder at the 2 GiB offset */
+    while ((stale = cache_get_recent()) != NULL)
+        cache_free(stale->name);
+    struct cache_t *c = cache_alloc(sparsepath);
+    CHECK(c != NULL);
+    if (!c) {
+        unlink(sparsepath);
+        return;
+    }
+    c->flags = hflags;
+    cache_set(c, rec_time, big_off);
+
+    char labels[] = "CPU,MEM";
+    struct output op = {.output_type = OUTPUT_BUF, .done = NULL};
+    int ret = rawlog_get_record(rec_time, labels, NULL, &op);
+    CHECK_EQ_INT(ret, 0);     /* the >2 GiB seek must not wrap to a negative int */
+    CHECK(op.ob.buf != NULL); /* and the record must actually have been decoded */
+    free(op.ob.buf);
+
+    cache_free(sparsepath);
+    unlink(sparsepath);
+}
+
 /* ------------------------------------------------------------------ */
 /* Concurrency stress: many reader threads decode records (cache_rdlock)
  * while a writer thread keeps adding new log files, each of which forces a
@@ -491,6 +599,7 @@ int main(void)
     RUN_TEST(test_record_huge_scomplen);
     RUN_TEST(test_record_huge_totproc);
     RUN_TEST(test_get_record_empty_cache);
+    RUN_TEST(test_get_record_large_offset);
     RUN_TEST(test_concurrent_cache_access);
     TEST_SUITE_END();
 }
