@@ -34,6 +34,10 @@ jobs:
       - name: Build atop submodule (log generator)
         run: make atop-bin
 
+      - name: Run TLS backend unit test
+        if: ${{ matrix.use_tls == 'yes' }}
+        run: make -C tests unit-tls
+
   # ---------------------------------------------------------------------------
   # Unit + integration tests with gcov coverage, gated at >= 90% line coverage.
   # ---------------------------------------------------------------------------
@@ -92,7 +96,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential zlib1g-dev libncursesw5-dev \
-                                  pkg-config libglib2.0-dev python3
+                                  pkg-config libglib2.0-dev libssl-dev python3
 
       - name: Run unit + integration tests under ASan/UBSan
         run: make sanitize
