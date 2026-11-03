@@ -12,10 +12,12 @@
 
 #include "httpd.h"
 
+#include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <poll.h>
 #include <stdlib.h>
 
 #ifdef USE_TLS
@@ -189,6 +191,81 @@ static void conn_close_tls(connection *conn)
     return;
 }
 
+/* One TLS record. poll() below is what actually enforces the deadline; this cap
+ * just bounds the work done per iteration and keeps the deadline re-checked
+ * frequently (it is no longer load-bearing for the timeout itself). */
+#define TLS_WRITE_CHUNK (16 * 1024)
+
+/*
+ * Send the whole buffer, giving up once CONN_SEND_TIMEOUT_MS of wall-clock time
+ * has elapsed. The socket is switched to non-blocking for the duration: on a
+ * blocking socket SSL_write() retries the underlying write() internally as long
+ * as a slow-but-steady reader keeps draining, so a single call can run for
+ * minutes and our between-call deadline check never fires. Non-blocking turns
+ * each stall into WANT_WRITE/WANT_READ, which we wait on with poll() bounded by
+ * the *remaining* budget -- making the deadline a true wall-clock bound.
+ *
+ * Returns the number of bytes sent (a short count signals truncation to the
+ * caller, matching the plain-socket path) or -EIO if nothing could be sent.
+ */
+static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
+{
+    int fd = SSL_get_fd(ssl);
+    int flags = (fd >= 0) ? fcntl(fd, F_GETFL) : -1;
+    size_t sent = 0;
+    long long deadline = conn_now_ms() + CONN_SEND_TIMEOUT_MS;
+    int rc;
+
+    if (fd < 0 || flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return -EIO;
+
+    /* Default-mode SSL_write writes the whole chunk or none; on WANT_WRITE the
+     * same args must be retried, which holds here since sent/chunk only advance
+     * on success. */
+    while (sent < len) {
+        long long remaining = deadline - conn_now_ms();
+        if (remaining <= 0)
+            break;
+
+        size_t chunk = len - sent;
+        if (chunk > TLS_WRITE_CHUNK)
+            chunk = TLS_WRITE_CHUNK;
+
+        int n = SSL_write(ssl, buf + sent, (int)chunk);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+
+        int err = SSL_get_error(ssl, n);
+        short events;
+        if (err == SSL_ERROR_WANT_WRITE)
+            events = POLLOUT;
+        else if (err == SSL_ERROR_WANT_READ)
+            events = POLLIN; /* a renegotiation may need to read first */
+        else {
+            if (sent == 0) {
+                rc = -EIO;
+                goto restore;
+            }
+            break;
+        }
+
+        /* Block until the socket is ready again, but never past the budget. */
+        struct pollfd pfd = {.fd = fd, .events = events};
+        int pr = poll(&pfd, 1, (int)remaining);
+        if (pr < 0 && errno == EINTR)
+            continue;
+        if (pr <= 0)
+            break; /* deadline reached or poll error: stop, return what we sent */
+    }
+
+    rc = (int)sent;
+restore:
+    fcntl(fd, F_SETFL, flags); /* leave the caller's blocking mode untouched */
+    return rc;
+}
+
 static int conn_write_tls(connection *conn, const void *data, size_t data_len)
 {
     tls_connection *tls_conn = (tls_connection *)conn;
@@ -196,13 +273,7 @@ static int conn_write_tls(connection *conn, const void *data, size_t data_len)
         return -EINVAL;
     }
 
-    int ret = SSL_write(tls_conn->ssl, data, data_len);
-    if (ret < 0) {
-        perror("SSL write error");
-        return -errno;
-    }
-
-    return 0;
+    return ssl_write_all(tls_conn->ssl, data, data_len);
 }
 
 static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt)
@@ -230,11 +301,7 @@ static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt
         offset += iov[i].iov_len;
     }
 
-    int ret = SSL_write(tls_conn->ssl, ssl_buf, iov_bytes_len);
-    if (ret < 0) {
-        perror("SSL writev error");
-        ret = -errno;
-    }
+    int ret = ssl_write_all(tls_conn->ssl, ssl_buf, iov_bytes_len);
 
     free(ssl_buf);
     return ret;
