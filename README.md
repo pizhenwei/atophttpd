@@ -39,19 +39,23 @@ batch.
  ./atophttpd -d -a ${IP} #run in daemon on ip
 ```
 
-**Match the atop version.** atophttpd reads atop's *version-specific* binary
-raw-log format, so it must be compiled against the same atop release that runs
-on the host. The build targets atop **v2.13.0** by default.
-Other releases of the same generation (the cgroup-v2 raw-log format, roughly
-atop 2.9–2.13) can be selected via `ATOP_VERSION`:
+**Match the atop version exactly.** atophttpd parses atop's *version-specific*
+binary raw-log format, so the source matches **one** atop release at a time, not
+a range: each atophttpd tag targets a single atop version, and `main` currently
+targets atop **v2.13.0**.
+
+To build for a different atop version, check out the matching atophttpd tag --
+its source and its pinned atop submodule already agree:
 ```
- make                        # atop v2.13.0 (default, CI-tested)
- make ATOP_VERSION=v2.11.1   # another 2.9-2.13 tag of the submodule
+ git checkout v2.11.1 && git submodule update --init --recursive && make
 ```
-Older generations (e.g. atop 2.8 on Debian bookworm) use a different struct
-and record layout; retargeting to them requires minor source changes in
-`json.c`/`rawlog.c`, so use an atophttpd revision built for that generation
-instead.
+`ATOP_VERSION` only repoints the atop submodule; it does **not** adapt the
+source, so pointing it at a version other than the one the current revision
+targets will fail to compile (e.g. `make ATOP_VERSION=v2.11.1` on the v2.13.0
+`main` breaks on struct fields that only exist in newer atop). Tags are added
+for atop releases from v2.11.1 onward; atop 2.10 has a dedicated (non-LTS)
+`v2.10.0` branch, and older generations (e.g. atop 2.8) need an atophttpd
+revision built for them.
 
 ### access atophttpd server:
 * By a web browser, for example: `192.168.1.100:2867`,
