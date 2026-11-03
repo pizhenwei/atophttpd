@@ -59,7 +59,7 @@ $CC $CFLAGS -DCACHE_FAULT_INJECTION -Wl,--wrap=calloc,--wrap=realloc,--wrap=strd
 	tests/unit/test_cache.c      cache.o                          -o tests/unit/test_cache      $LDLIBS
 $CC $CFLAGS tests/unit/test_output.c     output.o                         -o tests/unit/test_output     $LDLIBS
 $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                      -o tests/unit/test_http_args  $LDLIBS
-$CC $CFLAGS tests/unit/test_connection.c connection.o socket.o tls.o log.o -o tests/unit/test_connection $LDLIBS
+$CC $CFLAGS -Wl,--wrap=write,--wrap=writev tests/unit/test_connection.c connection.o socket.o tls.o log.o -o tests/unit/test_connection $LDLIBS
 $CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o version.o -o tests/unit/test_rawlog $LDLIBS
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o         -o tests/unit/test_json      $LDLIBS
 

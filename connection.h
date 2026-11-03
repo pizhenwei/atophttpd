@@ -17,10 +17,19 @@
 #define CONN_TYPE_TLS "tls"
 #define CONN_TYPE_MAX 8
 
+/*
+ * Overall wall-clock budget (milliseconds) for sending one response. The send
+ * path loops to deliver a full response across partial writes, but gives up
+ * once this deadline passes so a single slow client can never tie a worker
+ * thread down indefinitely.
+ */
+#define CONN_SEND_TIMEOUT_MS 10000
+
 #include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/uio.h>
+#include <time.h>
 
 typedef struct connection connection;
 
@@ -103,6 +112,16 @@ int register_conntype_socket();
 int register_conntype_tls();
 
 int listen_to_port(int port, char *bindaddr, int af);
+
+/* Monotonic clock in milliseconds, used to bound the send path. */
+static inline long long conn_now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 connection_type *get_conntype_by_name(const char *typename);
 int get_conntype_index_by_name(const char *typename);
 
