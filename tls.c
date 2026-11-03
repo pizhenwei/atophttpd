@@ -214,7 +214,7 @@ static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt
     }
 
     size_t iov_bytes_len = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < iovcnt; i++) {
         iov_bytes_len += iov[i].iov_len;
     }
 
