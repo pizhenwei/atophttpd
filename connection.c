@@ -118,7 +118,8 @@ int listen_to_port(int port, char *bindaddr, int af)
 
     ret = getaddrinfo(bindaddr, _port, &hints, &res);
     if (ret != 0) {
-        log_err("failed to get addr info: %s\n", strerror(errno));
+        log_err("failed to get addr info for [%s]:%s: %s\n", bindaddr ? bindaddr : "*", _port,
+                gai_strerror(ret));
         /* res is left unset on failure; nothing to free */
         return -1;
     }
