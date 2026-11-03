@@ -15,12 +15,11 @@ PREFIX := $(prefix)
 CC=gcc
 CLANGFMT = clang-format-18
 
-# atop version atophttpd is compiled against. It MUST match the atop release
-# installed on the target host, because atophttpd reads atop's version-specific
-# binary raw-log format. The source targets the cgroup-v2 raw-log generation
-# (roughly atop 2.9-2.13); v2.13.0 is the default and is CI-tested. Override
-# with another tag of the same generation, e.g.:
-#   make ATOP_VERSION=v2.11.1
+# atop version atophttpd is compiled against. atophttpd parses atop's
+# version-specific binary raw-log format, so the source matches exactly ONE atop
+# release: v2.13.0 (the default, CI-tested). ATOP_VERSION only repoints the atop
+# submodule -- it does NOT adapt the source -- so override it only together with
+# the matching atophttpd tag (see the README "Match the atop version" section).
 ATOP_VERSION ?= v2.13.0
 
 ifneq (,$(filter $(USE_TLS),yes YES y Y 1))
