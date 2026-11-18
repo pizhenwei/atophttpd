@@ -17,17 +17,23 @@
 #define CONN_TYPE_TLS "tls"
 #define CONN_TYPE_MAX 8
 
-/*
- * Overall wall-clock budget (milliseconds) for sending one response. The send
- * path loops to deliver a full response across partial writes, but gives up
- * once this deadline passes so a single slow client can never tie a worker
- * thread down indefinitely.
+/* Single-shot non-blocking I/O contract:
+ *
+ *   read()  returns 0 on EOF, >0 on data, -EAGAIN when nothing is ready yet,
+ *           or a negative errno on a hard error.
+ *   write()  returns >0 on bytes accepted by the kernel (or one TLS record),
+ *           -EAGAIN when the fd cannot take more data right now, or a negative
+ *           errno on a hard error.
+ *
+ * After -EAGAIN the caller re-arms the fd with conn->wait_events, which the
+ * backend fills in before returning: a TLS backend may need to read in order
+ * to write and vice versa (renegotiation), so it cannot be derived from the
+ * call direction alone. Plain sockets use the obvious mapping
+ * (read -> EPOLLIN, write -> EPOLLOUT).
  */
-#define CONN_SEND_TIMEOUT_MS 10000
-
-#include <poll.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/uio.h>
 #include <time.h>
 
@@ -42,6 +48,12 @@ typedef struct connection_type {
 
     connection *(*conn_create)(int port, char *addr);
     int (*listen)(connection *listener);
+
+    /* Drive the backend handshake (TLS) in a single non-blocking step; NULL
+     * when the type needs no handshake (plain TCP). Returns 0 once the
+     * handshake is complete, -EAGAIN to continue later (see wait_events),
+     * or a negative errno on a fatal error. */
+    int (*handshake)(struct connection *conn);
 
     int (*accept)(struct connection *listener, struct connection *conn);
     void (*close)(struct connection *conn);
@@ -58,6 +70,8 @@ struct connection {
     int port;
     int is_local;
     char *bindaddr;
+    void *priv;      /* opaque per-owner data (the event loop's client) */
+    int wait_events; /* epoll interest to re-arm after -EAGAIN; see above */
 };
 
 static inline int conn_configure(connection_type *ct, void *priv, int reconfigure)
@@ -78,6 +92,11 @@ static inline int conn_listen(connection *listener)
 static inline int conn_accept(connection *listener, connection *conn)
 {
     return conn->type->accept(listener, conn);
+}
+
+static inline int conn_handshake(connection *conn)
+{
+    return conn->type->handshake ? conn->type->handshake(conn) : 0;
 }
 
 static inline void conn_close(connection *conn)
@@ -113,7 +132,7 @@ int register_conntype_tls();
 
 int listen_to_port(int port, char *bindaddr, int af);
 
-/* Monotonic clock in milliseconds, used to bound the send path. */
+/* Monotonic clock in milliseconds, used to bound the per-state deadlines. */
 static inline long long conn_now_ms(void)
 {
     struct timespec ts;

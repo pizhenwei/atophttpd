@@ -323,6 +323,143 @@ class ConnectionHandlingTests(unittest.TestCase):
         self.assertIn(b"pong", data)
 
 
+class TlsStalledClientTests(unittest.TestCase):
+    """Regression tests for issue #12: a TLS client that connects and stays
+    silent used to block the handshake -- and with it the whole accept loop,
+    plain HTTP included. Needs a TLS-enabled build (make USE_TLS=yes) and the
+    openssl CLI; skipped otherwise."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        if shutil.which("openssl") is None:
+            raise unittest.SkipTest("openssl CLI not available")
+
+        cls.certdir = tempfile.mkdtemp(prefix="atophttpd_tls_")
+        d = cls.certdir
+        cls.ca = os.path.join(d, "ca.crt")
+        run = lambda *a: subprocess.run(a, check=True, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=60)
+        run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", os.path.join(d, "ca.key"), "-out", cls.ca,
+            "-days", "2", "-subj", "/CN=ca")
+        for name in ("server", "client"):
+            run("openssl", "req", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", os.path.join(d, name + ".key"),
+                "-out", os.path.join(d, name + ".csr"), "-subj", "/CN=" + name)
+            run("openssl", "x509", "-req", "-in", os.path.join(d, name + ".csr"),
+                "-CA", cls.ca, "-CAkey", os.path.join(d, "ca.key"),
+                "-CAcreateserial", "-out", os.path.join(d, name + ".crt"),
+                "-days", "2")
+
+        cls.http_port = _free_port()
+        cls.tls_port = _free_port()
+        cls.server = subprocess.Popen(
+            [ATOPHTTPD_BIN, "-a", HOST, "-p", str(cls.http_port),
+             "-t%d" % cls.tls_port, "-A", HOST, "-P", _log_dir,
+             "-C", cls.ca,
+             "-c", os.path.join(d, "server.crt"), "-k", os.path.join(d, "server.key")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if cls.server.poll() is not None:
+                out = cls.server.stdout.read().decode(errors="replace")
+                cls._cleanup()
+                raise unittest.SkipTest("server has no TLS support: %s" % out[-200:])
+            try:
+                socket.create_connection((HOST, cls.tls_port), timeout=0.5).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            cls._cleanup()
+            raise RuntimeError("TLS server did not become ready")
+
+    @classmethod
+    def _cleanup(cls):
+        import shutil
+        if getattr(cls, "server", None) and cls.server.poll() is None:
+            cls.server.terminate()
+            try:
+                cls.server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cls.server.kill()
+        shutil.rmtree(cls.certdir, ignore_errors=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._cleanup()
+
+    def _tls_get(self, path):
+        import ssl
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.ca)
+        ctx.check_hostname = False
+        # the throwaway test CA has no keyUsage extension, which Python's
+        # strict X.509 mode (default since 3.13) rejects
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        ctx.load_cert_chain(os.path.join(self.certdir, "client.crt"),
+                            os.path.join(self.certdir, "client.key"))
+        raw = socket.create_connection((HOST, self.tls_port), timeout=3)
+        with ctx.wrap_socket(raw, server_hostname="localhost") as s:
+            s.sendall(("GET %s HTTP/1.1\r\nHost: t\r\n\r\n" % path).encode())
+            buf = b""
+            while True:
+                try:
+                    chunk = s.recv(65536)
+                except (ssl.SSLError, socket.timeout):
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+        return buf
+
+    def _http_ping(self):
+        s = socket.create_connection((HOST, self.http_port), timeout=3)
+        s.sendall(b"GET /ping HTTP/1.1\r\nHost: t\r\n\r\n")
+        buf = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return buf
+
+    def test_silent_tls_client_does_not_block_others(self):
+        # the exact reproducer from the issue: connect to the TLS port, say nothing
+        silent = socket.create_connection((HOST, self.tls_port), timeout=3)
+        try:
+            time.sleep(0.2)
+            t0 = time.time()
+            self.assertIn(b"200", self._http_ping())   # plain HTTP still served
+            self.assertLess(time.time() - t0, 2.0)
+            self.assertIn(b"pong", self._tls_get("/ping"))  # and so is TLS
+        finally:
+            silent.close()
+
+    def test_many_silent_tls_clients(self):
+        # several stalled handshakes at once must not exhaust or stall the loop
+        silent = [socket.create_connection((HOST, self.tls_port), timeout=3)
+                  for _ in range(20)]
+        try:
+            time.sleep(0.2)
+            self.assertIn(b"200", self._http_ping())
+            self.assertIn(b"pong", self._tls_get("/ping"))
+        finally:
+            for s in silent:
+                s.close()
+
+    def test_tls_large_response(self):
+        # exercises the partial-write / WANT_WRITE resume path over TLS
+        body = self._tls_get("/js/atop.js")
+        self.assertIn(b"200", body.split(b"\r\n", 1)[0])
+        head, _, payload = body.partition(b"\r\n\r\n")
+        length = int([l for l in head.split(b"\r\n")
+                      if l.lower().startswith(b"content-length:")][0].split(b":")[1])
+        self.assertEqual(len(payload), length)
+
+
 class ShowsampDataTests(unittest.TestCase):
     """Only meaningful when a real log with samples is available."""
 
@@ -383,10 +520,11 @@ class ShowsampDataTests(unittest.TestCase):
 class ConcurrencyTests(unittest.TestCase):
     """Hammer the server with many parallel requests.
 
-    This exercises the worker pool and the cache read/write lock: several
-    workers decode samples (read lock) while the acceptor periodically
-    re-parses the log (write lock). Under AddressSanitizer a use-after-free
-    or heap corruption from a cache race would abort the server here.
+    The server serves every connection from one epoll loop, so this checks
+    that interleaved requests are each answered completely and correctly (no
+    cross-talk between per-connection buffers) while the loop periodically
+    re-parses the log under the cache write lock. Under AddressSanitizer a
+    use-after-free or heap corruption would abort the server here.
     """
 
     @classmethod
@@ -422,11 +560,11 @@ class ConcurrencyTests(unittest.TestCase):
         return ("dropped repeatedly", b"")
 
     def test_parallel_showsamp(self):
-        # 8 client threads (> the 4 server workers) each issue a tight loop of
-        # requests: this saturates the worker pool and the cache read lock
-        # while keeping every connect->send pair prompt (a connection that
-        # stays silent is intentionally dropped by the slow-client guard, so we
-        # must not starve the senders the way a huge thread fan-out would).
+        # 8 client threads each issue a tight loop of requests: this keeps many
+        # connections in flight on the event loop at once while keeping every
+        # connect->send pair prompt (a connection that stays silent is
+        # intentionally dropped by the slow-client guard, so we must not starve
+        # the senders the way a huge thread fan-out would).
         from concurrent.futures import ThreadPoolExecutor
 
         def run(_):

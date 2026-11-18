@@ -467,12 +467,12 @@ static void test_socket_send_all_errors(void)
 }
 
 /*
- * Regression guard for the send-all loop. A forced one-byte short write (via
- * the __wrap_write/__wrap_writev interposers) must NOT make conn_write or
- * conn_writev report a truncated length: the loop has to resume and deliver the
- * whole payload. The reader thread drains everything and checksums it, so we
- * also prove the bytes arrive intact and in order after the resume. With the
- * pre-fix single write()/writev() this test fails (returns 1, not n).
+ * The send path is single-shot (the event loop owns retrying): a forced
+ * one-byte short write (via the __wrap_write/__wrap_writev interposers) must be
+ * reported as exactly that short count -- never as a full length, never
+ * looped over inside the backend. The caller then resumes from the returned
+ * offset, as the event loop does, and the reader thread checksums everything
+ * to prove the bytes arrive intact and in order across the resume.
  */
 static void test_socket_send_all_short_write(void)
 {
@@ -505,11 +505,21 @@ static void test_socket_send_all_short_write(void)
         int w = conn_write(c, payload, n);
         g_short_armed = 0;
         g_short_fd = -1;
+        CHECK_EQ_INT(w, 1); /* the short count is surfaced, not hidden */
+
+        /* resume from the offset, like the event loop does */
+        size_t off = w > 0 ? (size_t)w : 0;
+        while (off < n) {
+            int r = conn_write(c, payload + off, n - off);
+            if (r <= 0)
+                break;
+            off += (size_t)r;
+        }
 
         conn_shutdown(c); /* EOF so the drainer stops even on a short send */
         pthread_join(t, NULL);
 
-        CHECK_EQ_INT(w, (int)n); /* the regression: never truncate */
+        CHECK_EQ_INT((int)off, (int)n);
         CHECK(d.got == (size_t)n);
         CHECK(d.sum == expect);
 
@@ -542,11 +552,34 @@ static void test_socket_send_all_short_write(void)
         int wv = conn_writev(c, iov, 3);
         g_short_armed = 0;
         g_short_fd = -1;
+        CHECK_EQ_INT(wv, 1);
+
+        /* resume mid-segment: advance the iovec past the bytes already sent */
+        size_t sent = wv > 0 ? (size_t)wv : 0;
+        while (sent < n) {
+            struct iovec rest[3];
+            size_t skip = sent;
+            int cnt = 0;
+            for (int i = 0; i < 3; i++) {
+                if (skip >= iov[i].iov_len) {
+                    skip -= iov[i].iov_len;
+                    continue;
+                }
+                rest[cnt].iov_base = (char *)iov[i].iov_base + skip;
+                rest[cnt].iov_len = iov[i].iov_len - skip;
+                skip = 0;
+                cnt++;
+            }
+            int r = conn_writev(c, rest, cnt);
+            if (r <= 0)
+                break;
+            sent += (size_t)r;
+        }
 
         conn_shutdown(c);
         pthread_join(t, NULL);
 
-        CHECK_EQ_INT(wv, (int)n);
+        CHECK_EQ_INT((int)sent, (int)n);
         CHECK(d.got == (size_t)n);
         CHECK(d.sum == expect);
 

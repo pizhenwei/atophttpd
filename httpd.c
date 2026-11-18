@@ -87,77 +87,166 @@ static char *http_content_type_html = "text/html";
 static char *http_content_type_css = "text/css";
 static char *http_content_type_javascript = "application/javascript";
 
-static int http_prepare_response(connection *conn)
+/* ------------------------------------------------------------------------
+ * Event loop: every connection (and listener) is an epoll node. The main
+ * loop below drives each connection through a small state machine:
+ *
+ *   CLI_HANDSHAKE (TLS only) -> CLI_READ -> CLI_WRITE -> close
+ *
+ * Everything runs non-blocking on one thread, so a client that stalls (a
+ * silent TLS handshake, a never-finished request head, an unreadable
+ * response) only ever stalls itself; every other connection keeps being
+ * served. Each state carries a deadline after which the connection is
+ * dropped (see the sweep in httpd_routine()).
+ * ------------------------------------------------------------------------ */
+
+/* Budget (ms) to read one request head, kept from the previous
+ * implementation: a client that connects but never finishes sending its
+ * request is dropped after this. */
+#define REQUEST_TIMEOUT_MS 100
+/* Budget (ms) for completing one TLS handshake. */
+#define HANDSHAKE_TIMEOUT_MS 10000
+/* Budget (ms) for flushing one response to a slow client. */
+#define RESPONSE_TIMEOUT_MS 10000
+#define MAX_EVENTS 64
+
+enum cli_state {
+    CLI_LISTENER,  /* epoll node is a listener: accept on EPOLLIN */
+    CLI_HANDSHAKE, /* TLS handshake in progress */
+    CLI_READ,      /* accumulating the request head */
+    CLI_WRITE,     /* flushing the response */
+};
+
+struct client {
+    connection *conn; /* owns fd (+ssl); conn->priv points back to this struct */
+    enum cli_state state;
+    int wait_events;    /* epoll interest currently armed */
+    long long deadline; /* ms (monotonic) to leave the current state */
+
+    size_t inbytes;
+    char inbuf[INBUF_SIZE];
+
+    char *out; /* response head+body, contiguous, malloc'd */
+    size_t outlen;
+    size_t outsent;
+
+    struct client *prev, *next;
+};
+
+static struct client *clients;
+static int epollfd = -1;
+
+static void client_insert(struct client *cli)
 {
-    /* try to send response data in a timeout */
-    int onoff = 1;
-    int ret;
-    ret = setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
-    if (ret) {
-        log_warn("failed to set socket to TCP_NODELAY\n");
-        return ret;
-    }
-
-    ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) & ~O_NONBLOCK);
-    if (ret) {
-        log_warn("failed to set conn to blocking\n");
-        return ret;
-    }
-
-    struct timeval tv = {.tv_sec = 5, .tv_usec = 0};
-    ret = setsockopt(conn->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    if (ret) {
-        log_warn("failed to set socket to SNDTIMEO\n");
-        return ret;
-    }
-
-    return 0;
+    cli->prev = NULL;
+    cli->next = clients;
+    if (clients)
+        clients->prev = cli;
+    clients = cli;
 }
 
-static void http_response_200(connection *conn, char *buf, size_t len, char *encoding,
+static void client_remove(struct client *cli)
+{
+    if (cli->prev)
+        cli->prev->next = cli->next;
+    else
+        clients = cli->next;
+    if (cli->next)
+        cli->next->prev = cli->prev;
+    cli->prev = cli->next = NULL;
+}
+
+static void client_drop(struct client *cli)
+{
+    epoll_ctl(epollfd, EPOLL_CTL_DEL, cli->conn->fd, NULL);
+    client_remove(cli);
+    conn_close(cli->conn);
+    free(cli->conn);
+    free(cli->out);
+    free(cli);
+}
+
+/* (Re-)arm the epoll interest of a connection; a no-op when unchanged. The
+ * first arm (wait_events == 0) registers the fd, later ones just modify it. */
+static void client_arm(struct client *cli, int events)
+{
+    struct epoll_event ev = {.events = events, .data.ptr = cli};
+    int op = cli->wait_events ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+
+    if (cli->wait_events == events)
+        return;
+
+    if (epoll_ctl(epollfd, op, cli->conn->fd, &ev) < 0)
+        log_warn("epoll_ctl(%s) failed: %m\n", op == EPOLL_CTL_ADD ? "ADD" : "MOD");
+    else
+        cli->wait_events = events;
+}
+
+/* Attach a response buffer (head+body, contiguous) to the client; the event
+ * loop flushes it and closes the connection once done. On allocation failure
+ * out stays NULL and the caller drops the connection. */
+static void client_set_out(struct client *cli, const void *buf, size_t len)
+{
+    char *out = malloc(len);
+
+    if (!out) {
+        log_warn("response allocation failed, dropping request\n");
+        return;
+    }
+    memcpy(out, buf, len);
+    cli->out = out;
+    cli->outlen = len;
+    cli->outsent = 0;
+}
+
+/* A bare single-line response (e.g. the 404 status line). */
+static void client_respond_line(struct client *cli, const char *line)
+{
+    client_set_out(cli, line, strlen(line));
+}
+
+/* status line + generic headers + body in one contiguous buffer. */
+static void client_respond(struct client *cli, const char *status, const char *body, size_t len,
+                           const char *encoding, const char *content_type)
+{
+    char header[256];
+    int hlen = snprintf(header, sizeof(header), "%s", status);
+
+    if (hlen < 0 || hlen >= (int)sizeof(header))
+        return;
+    hlen +=
+        snprintf(header + hlen, sizeof(header) - hlen, http_generic, encoding, content_type, len);
+
+    if (hlen < 0 || hlen >= (int)sizeof(header)) {
+        log_err("response header too large, dropping request\n");
+        return;
+    }
+
+    char *out = malloc((size_t)hlen + len);
+    if (!out) {
+        log_warn("response allocation failed, dropping request\n");
+        return;
+    }
+    memcpy(out, header, (size_t)hlen);
+    memcpy(out + hlen, body, len);
+
+    cli->out = out;
+    cli->outlen = (size_t)hlen + len;
+    cli->outsent = 0;
+}
+
+static void http_response_200(struct client *cli, const char *body, size_t len, char *encoding,
                               char *content_type)
 {
-    struct iovec iovs[3], *iov;
-    int ret;
-    char content[256] = {0};
-    int content_length = 0;
-
-    ret = http_prepare_response(conn);
-    if (ret) {
-        goto closeconn;
-    }
-
-    /* 1, http code */
-    iov = &iovs[0];
-    iov->iov_base = http_200;
-    iov->iov_len = strlen(http_200);
-
-    /* 2, http generic content */
-    iov = &iovs[1];
-
-    content_length = snprintf(content, sizeof(content), http_generic, encoding, content_type, len);
-    if (content_length < 0 || content_length >= (int)sizeof(content)) {
-        log_err("response header too large, dropping request\n");
-        goto closeconn;
-    }
-    iov->iov_base = content;
-    iov->iov_len = content_length;
-
-    /* 3, sample data record */
-    iov = &iovs[2];
-    iov->iov_base = buf;
-    iov->iov_len = len;
-
-    conn_writev(conn, iovs, sizeof(iovs) / sizeof(iovs[0]));
-
-closeconn:
-    conn_close(conn);
+    client_respond(cli, http_200, body, len, encoding, content_type);
 }
 
 static void http_show_samp_done(struct output *op, connection *conn)
 {
+    struct client *cli = conn->priv;
+
     if (op->encoding == http_content_type_none) {
-        http_response_200(conn, op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
+        http_response_200(cli, op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
         return;
     }
 
@@ -167,17 +256,16 @@ static void http_show_samp_done(struct output *op, connection *conn)
 
     if (!compbuf ||
         compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK) {
-        http_prepare_response(conn);
-        conn_write(conn, http_404, strlen(http_404));
+        client_respond_line(cli, http_404);
         free(compbuf);
         return;
     }
 
-    http_response_200(conn, compbuf, complen, http_content_type_deflate, http_content_type_html);
+    http_response_200(cli, compbuf, complen, http_content_type_deflate, http_content_type_html);
     free(compbuf);
 }
 
-static void http_showsamp(char *req, connection *conn)
+static void http_showsamp(char *req, struct client *cli)
 {
     time_t timestamp = 0;
     char lables[1024];
@@ -185,19 +273,19 @@ static void http_showsamp(char *req, connection *conn)
 
     if (http_arg_long(req, "timestamp", &timestamp) < 0) {
         char *err = "missing timestamp\r\n";
-        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
         return;
     }
 
     if (timestamp <= 0) {
         char *err = "invalid timestamp\r\n";
-        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
         return;
     }
 
     if (http_arg_str(req, "lables", lables, sizeof(lables)) < 0) {
         char *err = "missing lables\r\n";
-        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
         return;
     }
 
@@ -213,15 +301,15 @@ static void http_showsamp(char *req, connection *conn)
             op.encoding = http_content_type_deflate;
         } else {
             char *err = "encoding supports none/deflate only\r\n";
-            http_response_200(conn, err, strlen(err), http_content_type_none,
+            http_response_200(cli, err, strlen(err), http_content_type_none,
                               http_content_type_html);
             return; /* op.ob.buf is NULL here, nothing to free */
         }
     }
 
-    if (rawlog_get_record(timestamp, lables, conn, &op) < 0) {
+    if (rawlog_get_record(timestamp, lables, cli->conn, &op) < 0) {
         char *err = "missing sample\r\n";
-        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
     }
 
     free(op.ob.buf);
@@ -239,18 +327,18 @@ static void http_showsamp(char *req, connection *conn)
 IMPORT_BIN(".rodata", "http/help.html", help);
 extern char help[], help_end[];
 
-static void http_help(connection *conn)
+static void http_help(struct client *cli)
 {
-    http_response_200(conn, help, help_end - help, http_content_type_none, http_content_type_html);
+    http_response_200(cli, help, help_end - help, http_content_type_none, http_content_type_html);
 }
 
 /* Build favicon.ico into atop binary */
 IMPORT_BIN(".rodata", "http/favicon.ico", favicon);
 extern char favicon[], favicon_end[];
 
-static void http_favicon(connection *conn)
+static void http_favicon(struct client *cli)
 {
-    http_response_200(conn, favicon, favicon_end - favicon, http_content_type_none,
+    http_response_200(cli, favicon, favicon_end - favicon, http_content_type_none,
                       http_content_type_html);
 }
 
@@ -258,9 +346,9 @@ static void http_favicon(connection *conn)
 IMPORT_BIN(".rodata", "http/index.html", http_index_html);
 extern char http_index_html[], http_index_html_end[];
 
-static void http_index(connection *conn)
+static void http_index(struct client *cli)
 {
-    http_response_200(conn, http_index_html, http_index_html_end - http_index_html,
+    http_response_200(cli, http_index_html, http_index_html_end - http_index_html,
                       http_content_type_none, http_content_type_html);
 }
 
@@ -268,9 +356,9 @@ static void http_index(connection *conn)
 IMPORT_BIN(".rodata", "http/js/atop.js", atop_js);
 extern char atop_js[], atop_js_end[];
 
-static void http_get_atop_js(connection *conn)
+static void http_get_atop_js(struct client *cli)
 {
-    http_response_200(conn, atop_js, atop_js_end - atop_js, http_content_type_none,
+    http_response_200(cli, atop_js, atop_js_end - atop_js, http_content_type_none,
                       http_content_type_javascript);
 }
 
@@ -278,19 +366,19 @@ static void http_get_atop_js(connection *conn)
 IMPORT_BIN(".rodata", "http/js/atop_parse.js", atop_parse_js);
 extern char atop_parse_js[], atop_parse_js_end[];
 
-static void http_get_atop_parse_js(connection *conn)
+static void http_get_atop_parse_js(struct client *cli)
 {
-    http_response_200(conn, atop_parse_js, atop_parse_js_end - atop_parse_js,
-                      http_content_type_none, http_content_type_javascript);
+    http_response_200(cli, atop_parse_js, atop_parse_js_end - atop_parse_js, http_content_type_none,
+                      http_content_type_javascript);
 }
 
 /* Build atop_compare_fc.js into atop binary */
 IMPORT_BIN(".rodata", "http/js/atop_compare_fc.js", atop_compare_fc_js);
 extern char atop_compare_fc_js[], atop_compare_fc_js_end[];
 
-static void http_get_atop_compare_fc_js(connection *conn)
+static void http_get_atop_compare_fc_js(struct client *cli)
 {
-    http_response_200(conn, atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js,
+    http_response_200(cli, atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js,
                       http_content_type_none, http_content_type_javascript);
 }
 
@@ -298,9 +386,9 @@ static void http_get_atop_compare_fc_js(connection *conn)
 IMPORT_BIN(".rodata", "http/css/atop.css", http_css);
 extern char http_css[], http_css_end[];
 
-static void http_get_css(connection *conn)
+static void http_get_css(struct client *cli)
 {
-    http_response_200(conn, http_css, http_css_end - http_css, http_content_type_none,
+    http_response_200(cli, http_css, http_css_end - http_css, http_content_type_none,
                       http_content_type_css);
 }
 
@@ -320,54 +408,52 @@ extern char disk_html_template[], disk_html_template_end[];
 IMPORT_BIN(".rodata", "http/template/html/command_line.html", command_line_html_template);
 extern char command_line_html_template[], command_line_html_template_end[];
 
-static void http_get_template_header(connection *conn)
+static void http_get_template_header(struct client *cli)
 {
-    http_response_200(conn, header_html_template, header_html_template_end - header_html_template,
+    http_response_200(cli, header_html_template, header_html_template_end - header_html_template,
                       http_content_type_none, http_content_type_html);
 }
 
-static void http_get_template(char *req, connection *conn)
+static void http_get_template(char *req, struct client *cli)
 {
     char template_type[256];
     if (http_arg_str(req, "type", template_type, sizeof(template_type)) < 0)
         return;
 
     if (!strcmp(template_type, "generic")) {
-        http_response_200(conn, generic_html_template,
+        http_response_200(cli, generic_html_template,
                           generic_html_template_end - generic_html_template, http_content_type_none,
                           http_content_type_html);
     } else if (!strcmp(template_type, "memory")) {
-        http_response_200(conn, memory_html_template,
+        http_response_200(cli, memory_html_template,
                           memory_html_template_end - memory_html_template, http_content_type_none,
                           http_content_type_html);
     } else if (!strcmp(template_type, "disk")) {
-        http_response_200(conn, disk_html_template, disk_html_template_end - disk_html_template,
+        http_response_200(cli, disk_html_template, disk_html_template_end - disk_html_template,
                           http_content_type_none, http_content_type_html);
     } else if (!strcmp(template_type, "command_line")) {
-        http_response_200(conn, command_line_html_template,
+        http_response_200(cli, command_line_html_template,
                           command_line_html_template_end - command_line_html_template,
                           http_content_type_none, http_content_type_html);
     } else {
-        http_prepare_response(conn);
-        conn_write(conn, http_404, strlen(http_404));
+        client_respond_line(cli, http_404);
     }
 }
 
-static void http_ping(connection *conn)
+static void http_ping(struct client *cli)
 {
     char *pong = "pong\r\n";
 
-    http_response_200(conn, pong, strlen(pong), http_content_type_none, http_content_type_html);
+    http_response_200(cli, pong, strlen(pong), http_content_type_none, http_content_type_html);
 }
 
-static void http_process_request(char *req, connection *conn)
+static void http_process_request(char *req, struct client *cli)
 {
     char location[URL_LEN] = {0};
     char *c;
 
     if (strlen(req) >= URL_LEN) {
-        http_prepare_response(conn);
-        conn_write(conn, http_404, strlen(http_404));
+        client_respond_line(cli, http_404);
         return;
     }
 
@@ -378,92 +464,129 @@ static void http_process_request(char *req, connection *conn)
         memcpy(location, req, strlen(req));
 
     if (strlen(location) == 0) {
-        http_index(conn);
+        http_index(cli);
         return;
     }
 
     if (!strcmp(location, "ping"))
-        http_ping(conn);
+        http_ping(cli);
     else if (!strcmp(location, "help"))
-        http_help(conn);
+        http_help(cli);
     else if (!strcmp(location, "favicon.ico"))
-        http_favicon(conn);
+        http_favicon(cli);
     else if (!strcmp(location, "showsamp"))
-        http_showsamp(req, conn);
+        http_showsamp(req, cli);
     else if (!strcmp(location, "index.html"))
-        http_index(conn);
+        http_index(cli);
     else if (!strcmp(location, "js/atop.js"))
-        http_get_atop_js(conn);
+        http_get_atop_js(cli);
     else if (!strcmp(location, "js/atop_parse.js"))
-        http_get_atop_parse_js(conn);
+        http_get_atop_parse_js(cli);
     else if (!strcmp(location, "js/atop_compare_fc.js"))
-        http_get_atop_compare_fc_js(conn);
+        http_get_atop_compare_fc_js(cli);
     else if (!strcmp(location, "css/atop.css"))
-        http_get_css(conn);
+        http_get_css(cli);
     else if (!strcmp(location, "template_header"))
-        http_get_template_header(conn);
+        http_get_template_header(cli);
     else if (!strcmp(location, "template"))
-        http_get_template(req, conn);
+        http_get_template(req, cli);
     else {
-        http_prepare_response(conn);
-        conn_write(conn, http_404, strlen(http_404));
+        client_respond_line(cli, http_404);
     }
 }
 
-static time_t httpd_now_ms()
+/*
+ * Per-state drivers. Each one makes non-blocking progress and either advances
+ * the state machine, re-arms the epoll interest, or drops the connection.
+ */
+static void client_drop(struct client *cli);
+
+static void client_handshake(struct client *cli)
 {
-    struct timeval now;
+    int ret = conn_handshake(cli->conn);
 
-    gettimeofday(&now, NULL);
+    if (ret == 0) { /* handshake done: wait for the request head */
+        cli->state = CLI_READ;
+        cli->deadline = conn_now_ms() + REQUEST_TIMEOUT_MS;
+        client_arm(cli, EPOLLIN);
+        return;
+    }
 
-    return now.tv_sec * 1000 + now.tv_usec / 1000;
+    if (ret == -EAGAIN) {
+        client_arm(cli, cli->conn->wait_events);
+        return;
+    }
+
+    client_drop(cli);
 }
 
-static void httpd_handle_request(connection *conn)
+static void client_write(struct client *cli)
 {
-    char inbuf[INBUF_SIZE] = {0};
-    int inbytes = 0;
-    char httpreq[URL_LEN] = {0};
-    time_t timeout = httpd_now_ms() + 100;
-    int ret;
+    connection *conn = cli->conn;
 
-    ret = fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
-    if (ret) {
-        log_warn("failed to set conn to non-blocking\n");
-        goto close_fd;
+    while (cli->outsent < cli->outlen) {
+        int ret = conn_write(conn, cli->out + cli->outsent, cli->outlen - cli->outsent);
+
+        if (ret == -EAGAIN) {
+            client_arm(cli, conn->wait_events);
+            return;
+        }
+        if (ret < 0) { /* hard error: give up on this client */
+            client_drop(cli);
+            return;
+        }
+        cli->outsent += (size_t)ret;
     }
+
+    /* response fully flushed; one request per connection, close now */
+    client_drop(cli);
+}
+
+static void client_parse_request(struct client *cli);
+
+static void client_read(struct client *cli)
+{
+    connection *conn = cli->conn;
 
     for (;;) {
-        time_t now = httpd_now_ms();
-        if (now >= timeout)
-            goto close_fd;
+        int ret = conn_read(conn, cli->inbuf + cli->inbytes, sizeof(cli->inbuf) - 1 - cli->inbytes);
 
-        struct pollfd pfd = {.fd = conn->fd, .events = POLLIN, .revents = 0};
-        ret = poll(&pfd, 1, timeout - now);
-        if (ret <= 0) {
-            if (ret != 0) {
-                goto close_fd;
-            }
-            continue;
+        if (ret == 0) /* EOF before a complete request */
+            goto drop;
+        if (ret == -EAGAIN) {
+            client_arm(cli, conn->wait_events ? conn->wait_events : EPOLLIN);
+            return;
         }
+        if (ret < 0)
+            goto drop;
 
-        /* keep one byte for the NUL so strstr() never reads past inbuf */
-        ret = conn_read(conn, inbuf + inbytes, sizeof(inbuf) - 1 - inbytes);
-        if (ret < 0) {
-            if (ret != -EAGAIN) {
-                goto close_fd;
-            }
-            continue;
-        }
-
-        inbytes += ret;
-        if ((inbytes >= 4) && strstr(inbuf, "\r\n\r\n"))
+        cli->inbytes += (size_t)ret;
+        /* strstr() relies on inbuf staying NUL-terminated: the struct is
+         * calloc'd and the byte at inbytes is never written before the parse. */
+        if (cli->inbytes >= 4 && strstr(cli->inbuf, "\r\n\r\n"))
             break;
 
-        /* buf is full, but we can not search the end of HTTP header */
-        if (inbytes == sizeof(inbuf) - 1)
-            goto close_fd;
+        /* buf is full, but the HTTP header end is nowhere in sight */
+        if (cli->inbytes == sizeof(cli->inbuf) - 1)
+            goto drop;
     }
+
+    client_parse_request(cli);
+    return;
+
+drop:
+    client_drop(cli);
+}
+
+/*
+ * The request head is complete: parse and route it. Handlers build the response
+ * into cli->out; a malformed request or a handler that builds nothing just
+ * drops the connection, like the previous implementation did.
+ */
+static void client_parse_request(struct client *cli)
+{
+    char *inbuf = cli->inbuf;
+    char httpreq[URL_LEN] = {0};
 
     /*
      * Parse the request line "GET <uri> HTTP/1.1". Bound every lookup to the
@@ -473,40 +596,90 @@ static void httpd_handle_request(connection *conn)
      */
     char *eol = strstr(inbuf, "\r\n");
     if (!eol)
-        goto close_fd;
+        goto drop;
 
     /* method: GET only */
     if (strncmp("GET ", inbuf, 4))
-        goto close_fd;
+        goto drop;
 
     char *uri = inbuf + 4;                  /* just after "GET " */
     char *sp = memchr(uri, ' ', eol - uri); /* space before the version */
     if (!sp)
-        goto close_fd;
+        goto drop;
 
     /* version: HTTP/1.1 only */
     if (strncmp(sp + 1, "HTTP/1.1", 8))
-        goto close_fd;
+        goto drop;
 
     /*
      * The URI must be absolute; drop the leading '/' so it matches the
      * routing table, which compares against bare names ("ping", "help", ...).
      */
     if (*uri != '/')
-        goto close_fd;
+        goto drop;
     uri++;
 
     size_t urilen = (size_t)(sp - uri);
     if (urilen >= URL_LEN)
-        goto close_fd;
+        goto drop;
 
     memcpy(httpreq, uri, urilen);
     httpreq[urilen] = '\0';
-    http_process_request(httpreq, conn);
 
-close_fd:
-    conn_close(conn);
+    http_process_request(httpreq, cli);
+
+    if (!cli->out) /* malformed, unrouted, or allocation failure */
+        goto drop;
+
+    /* flush the built response */
+    cli->state = CLI_WRITE;
+    cli->deadline = conn_now_ms() + RESPONSE_TIMEOUT_MS;
+    client_write(cli);
     return;
+
+drop:
+    client_drop(cli);
+}
+
+/* Accept one connection from a listener and enter the state machine. */
+static void client_new(struct client *listener_cli)
+{
+    connection *listener = listener_cli->conn;
+    connection *conn = conn_create(listener->type, -1, NULL);
+    struct client *cli = calloc(1, sizeof(struct client));
+    int onoff = 1;
+
+    if (!conn || !cli) {
+        log_warn("accept: out of memory\n");
+        goto fail;
+    }
+
+    if (conn_accept(listener, conn) < 0)
+        goto fail;
+
+    /* every client fd runs non-blocking inside the event loop */
+    fcntl(conn->fd, F_SETFL, fcntl(conn->fd, F_GETFL) | O_NONBLOCK);
+    setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &onoff, sizeof(onoff));
+
+    conn->priv = cli;
+    cli->conn = conn;
+    cli->state = listener->type->handshake ? CLI_HANDSHAKE : CLI_READ;
+    cli->deadline =
+        conn_now_ms() + (cli->state == CLI_HANDSHAKE ? HANDSHAKE_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
+    client_insert(cli);
+
+    if (cli->state == CLI_HANDSHAKE)
+        client_handshake(cli); /* first step; returns -EAGAIN until ClientHello */
+    else
+        client_arm(cli, EPOLLIN);
+    return;
+
+fail:
+    if (conn) {
+        conn_close(conn);
+        free(conn);
+    }
+    free(cli);
 }
 
 static void httpd_update_cache(char *log_path)
@@ -525,104 +698,16 @@ static void httpd_update_cache(char *log_path)
 }
 
 /*
- * Worker pool. The acceptor thread runs the epoll loop and hands every
- * accepted connection to a bounded queue; a fixed pool of worker threads drains
- * the queue and serves requests concurrently. This keeps one slow client from
- * stalling every other client, and lets independent requests read the raw-log
- * cache in parallel under the cache read lock.
+ * The main (and only) serving thread: one epoll loop drives every listener
+ * and every accepted connection through the state machine above. Nothing
+ * blocks, so one stalled client -- e.g. a silent TLS handshake -- can never
+ * stop the server from accepting or serving other connections (issue #12).
  */
-#define WORKER_THREADS 4
-#define WORKQ_CAP 64
-
-static struct workqueue {
-    connection *items[WORKQ_CAP];
-    int head;
-    int tail;
-    int count;
-    int stop;
-    pthread_mutex_t mutex;
-    pthread_cond_t not_empty;
-    pthread_cond_t not_full;
-} workq = {
-    .mutex = PTHREAD_MUTEX_INITIALIZER,
-    .not_empty = PTHREAD_COND_INITIALIZER,
-    .not_full = PTHREAD_COND_INITIALIZER,
-};
-
-/* Producer: block (backpressure) while the queue is full, then enqueue. */
-static void workq_push(connection *conn)
-{
-    pthread_mutex_lock(&workq.mutex);
-    while (workq.count == WORKQ_CAP && !workq.stop)
-        pthread_cond_wait(&workq.not_full, &workq.mutex);
-
-    if (workq.stop) {
-        pthread_mutex_unlock(&workq.mutex);
-        conn_close(conn);
-        free(conn);
-        return;
-    }
-
-    workq.items[workq.tail] = conn;
-    workq.tail = (workq.tail + 1) % WORKQ_CAP;
-    workq.count++;
-    pthread_cond_signal(&workq.not_empty);
-    pthread_mutex_unlock(&workq.mutex);
-}
-
-/* Consumer: block until an item is available; return NULL once stopped+drained. */
-static connection *workq_pop(void)
-{
-    pthread_mutex_lock(&workq.mutex);
-    while (workq.count == 0 && !workq.stop)
-        pthread_cond_wait(&workq.not_empty, &workq.mutex);
-
-    if (workq.count == 0) {
-        pthread_mutex_unlock(&workq.mutex);
-        return NULL;
-    }
-
-    connection *conn = workq.items[workq.head];
-    workq.head = (workq.head + 1) % WORKQ_CAP;
-    workq.count--;
-    pthread_cond_signal(&workq.not_full);
-    pthread_mutex_unlock(&workq.mutex);
-
-    return conn;
-}
-
-static void workq_shutdown(void)
-{
-    pthread_mutex_lock(&workq.mutex);
-    workq.stop = 1;
-    pthread_cond_broadcast(&workq.not_empty);
-    pthread_cond_broadcast(&workq.not_full);
-    pthread_mutex_unlock(&workq.mutex);
-}
-
-static void *httpd_worker(void *arg)
-{
-    (void)arg;
-
-    for (;;) {
-        connection *conn = workq_pop();
-        if (!conn)
-            break;
-
-        httpd_handle_request(conn);
-        free(conn);
-    }
-
-    return NULL;
-}
-
 static void *httpd_routine(connection **listeners, char *log_path)
 {
-    int epollfd;
-    int ret = 0;
+    struct epoll_event events[MAX_EVENTS];
+    struct client *cli, *next;
     int nr_listener = 0;
-    connection *listener;
-    struct epoll_event event;
 
     epollfd = epoll_create1(0);
     if (epollfd < 0) {
@@ -631,24 +716,25 @@ static void *httpd_routine(connection **listeners, char *log_path)
     }
 
     for (int i = 0; i < CONN_TYPE_MAX; i++) {
-        listener = listeners[i];
-        if (listener == NULL) {
-            continue;
-        }
+        connection *listener = listeners[i];
+        struct client *lc;
 
-        ret = conn_listen(listener);
-        if (ret < 0) {
+        if (listener == NULL)
+            continue;
+
+        if (conn_listen(listener) < 0) {
             log_err("ConnectionType %s failed listening on port %u, aborting.\n",
                     listener->type->get_type(NULL), listener->port);
             exit(1);
         }
 
-        event.events = EPOLLIN;
-        event.data.ptr = listener;
-        if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listener->fd, &event)) {
-            log_err("Add listener into epoll failed\n");
+        lc = calloc(1, sizeof(struct client));
+        if (!lc)
             exit(1);
-        }
+        lc->conn = listener;
+        lc->state = CLI_LISTENER;
+        client_insert(lc);
+        client_arm(lc, EPOLLIN);
         nr_listener++;
     }
 
@@ -659,56 +745,79 @@ static void *httpd_routine(connection **listeners, char *log_path)
 
     log_info("Ready to serve\n");
 
-    pthread_t workers[WORKER_THREADS];
-    int nr_workers = 0;
-    for (int i = 0; i < WORKER_THREADS; i++) {
-        if (pthread_create(&workers[i], NULL, httpd_worker, NULL) == 0)
-            nr_workers++;
-        else
-            log_warn("failed to create worker thread %d\n", i);
-    }
-    if (nr_workers == 0) {
-        log_err("Failed to create any worker thread, Exit.\n");
-        exit(1);
-    }
-
     while (!httpd_stop) {
-        /* refresh the cache periodically (throttled to every few seconds)
-         * so it stays current even when no request is in flight */
-        httpd_update_cache(log_path);
+        /* never sleep past the nearest per-state deadline */
+        int timeout = 1000;
+        long long now = conn_now_ms();
 
-        ret = epoll_wait(epollfd, &event, 1, 1000);
-        if (!ret) {
-            continue;
+        for (cli = clients; cli; cli = cli->next) {
+            if (cli->state == CLI_LISTENER)
+                continue;
+            if (cli->deadline - now < (long long)timeout)
+                timeout = (int)(cli->deadline - now);
+        }
+        if (timeout < 0)
+            timeout = 0;
+
+        int n = epoll_wait(epollfd, events, MAX_EVENTS, timeout);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            log_err("Error in epoll_wait %m\n");
+            exit(1);
         }
 
-        if (ret < 0) {
-            if (errno == EINTR) {
+        for (int i = 0; i < n; i++) {
+            struct client *c = events[i].data.ptr;
+            uint32_t ev = events[i].events;
+
+            if (ev & (EPOLLERR | EPOLLHUP)) {
+                if (c->state != CLI_LISTENER)
+                    client_drop(c);
                 continue;
-            } else {
-                log_err("Error in epoll_wait %m\n");
-                exit(1);
+            }
+
+            switch (c->state) {
+            case CLI_LISTENER:
+                client_new(c);
+                break;
+            case CLI_HANDSHAKE:
+                client_handshake(c);
+                break;
+            case CLI_READ:
+                client_read(c);
+                break;
+            case CLI_WRITE:
+                client_write(c);
+                break;
             }
         }
 
-        listener = event.data.ptr;
-        connection *conn;
-        conn = conn_create(listener->type, -1, NULL);
-        ret = conn_accept(listener, conn);
-        if (ret < 0) {
-            conn_close(conn);
-            free(conn);
-            continue;
+        /* drop every client whose state deadline has expired: silent or
+         * slow clients never hold the loop, they simply go away */
+        now = conn_now_ms();
+        for (cli = clients; cli; cli = next) {
+            next = cli->next;
+            if (cli->state != CLI_LISTENER && now >= cli->deadline)
+                client_drop(cli);
         }
 
-        /* hand the connection to a worker thread; the worker frees it */
-        workq_push(conn);
+        /* refresh the cache periodically (throttled to every few seconds)
+         * so it stays current even when no request is in flight */
+        httpd_update_cache(log_path);
     }
 
-    /* drain and stop the pool before returning */
-    workq_shutdown();
-    for (int i = 0; i < nr_workers; i++)
-        pthread_join(workers[i], NULL);
+    /* shutdown: close every client and listener */
+    for (cli = clients; cli; cli = next) {
+        next = cli->next;
+        if (cli->state == CLI_LISTENER) {
+            client_remove(cli);
+            conn_close(cli->conn); /* the ctx owns the listener object */
+            free(cli);
+        } else {
+            client_drop(cli);
+        }
+    }
 
     close(epollfd);
     return NULL;
