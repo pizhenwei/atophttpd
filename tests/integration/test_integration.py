@@ -81,6 +81,24 @@ def _raw_request(path, method=b"GET", version=b"HTTP/1.1", host_header=True):
     return (status, headers, body)
 
 
+def _raw_exchange(raw, timeout=5):
+    """Send raw bytes, then read until the server closes. Returns what came back."""
+    s = socket.create_connection((HOST, _port), timeout=timeout)
+    s.sendall(raw)
+    data = b""
+    try:
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    except (socket.timeout, ConnectionResetError, BrokenPipeError, OSError):
+        pass
+    finally:
+        s.close()
+    return data
+
+
 def _gen_log():
     """Generate a short atop raw-log, return (log_dir, [sample_epochs])."""
     global _tmpdir
@@ -236,6 +254,19 @@ class RequestValidationTests(unittest.TestCase):
         status, _, body = _raw_request("/" + "a" * 2000)
         self.assertNotIn(b"200", status)
 
+    def test_request_line_without_version_rejected(self):
+        # no space before the version: nothing to split the URI from it
+        self.assertNotIn(b"200", _raw_exchange(b"GET /ping\r\n\r\n"))
+
+    def test_relative_uri_rejected(self):
+        # the URI must be absolute (start with '/')
+        self.assertNotIn(b"200", _raw_exchange(b"GET ping HTTP/1.1\r\n\r\n"))
+
+    def test_template_without_type_closed(self):
+        # /template needs a type= argument; without it no response is built
+        # and the connection is simply closed
+        self.assertEqual(_raw_exchange(b"GET /template HTTP/1.1\r\n\r\n"), b"")
+
 
 class ShowsampErrorTests(unittest.TestCase):
     def test_missing_timestamp(self):
@@ -245,6 +276,10 @@ class ShowsampErrorTests(unittest.TestCase):
     def test_missing_lables(self):
         _, _, body = _raw_request("/showsamp?timestamp=1")
         self.assertIn(b"missing lables", body)
+
+    def test_invalid_timestamp(self):
+        _, _, body = _raw_request("/showsamp?timestamp=0&lables=ALL")
+        self.assertIn(b"invalid timestamp", body)
 
     def test_bad_encoding(self):
         _, _, body = _raw_request(
@@ -305,6 +340,55 @@ class ConnectionHandlingTests(unittest.TestCase):
         finally:
             s.close()
         self.assertNotIn(b"200", data)
+
+    def test_eof_before_request_complete(self):
+        # the client gives up (clean FIN) halfway through the request line; the
+        # server must just drop the connection and keep serving others.
+        s = socket.create_connection((HOST, _port), timeout=5)
+        s.sendall(b"GET /pi")
+        s.close()
+        time.sleep(0.05)
+        status, _, body = _raw_request("/ping")
+        self.assertIn(b"200", status)
+
+    def test_reset_mid_request(self):
+        # the client aborts with a TCP RST (SO_LINGER 0) mid-request: a hard
+        # socket error, handled by dropping that client only.
+        import struct
+        s = socket.create_connection((HOST, _port), timeout=5)
+        s.sendall(b"GET /pi")
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        s.close()
+        time.sleep(0.05)
+        status, _, body = _raw_request("/ping")
+        self.assertIn(b"200", status)
+
+    def test_slow_reader_gets_full_response(self):
+        # A client that does not read for a while makes the server's send
+        # buffer fill up: the event loop must park that connection on EPOLLOUT
+        # and resume it, delivering the complete body, instead of blocking or
+        # truncating. A tiny receive buffer makes the stall likely.
+        if not _sample_epochs:
+            self.skipTest("no sample epochs available")
+        ts = _sample_epochs[len(_sample_epochs) // 2]
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        s.settimeout(10)
+        s.connect((HOST, _port))
+        s.sendall(("GET /showsamp?timestamp=%d&lables=ALL&encoding=none HTTP/1.1\r\n"
+                   "Host: t\r\n\r\n" % ts).encode())
+        time.sleep(1.0)  # let the server hit EAGAIN on a full socket
+        buf = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        head, _, body = buf.partition(b"\r\n\r\n")
+        length = int([l for l in head.split(b"\r\n")
+                      if l.lower().startswith(b"content-length:")][0].split(b":")[1])
+        self.assertEqual(len(body), length)
 
     def test_partial_then_complete(self):
         # send the request in two pieces; the read loop must reassemble it.
@@ -644,6 +728,36 @@ class CliTests(unittest.TestCase):
                        "-k", "/x/key", "-P", "/no/such/atop/log/dir"])
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("parse failed", p.stderr)
+
+    def test_listen_failure(self):
+        # an address getaddrinfo cannot resolve: the listener cannot be set up
+        p = self._run(["-a", "999.999.999.999", "-p", str(_free_port()), "-P", _log_dir])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("failed listening", p.stderr)
+
+    def test_shutdown_with_client_connected(self):
+        # SIGTERM while a client is still mid-request: the loop must close it
+        # and exit cleanly (exercises the shutdown cleanup path).
+        port = _free_port()
+        srv = subprocess.Popen([ATOPHTTPD_BIN, "-a", HOST, "-p", str(port), "-P", _log_dir],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                try:
+                    socket.create_connection((HOST, port), timeout=0.5).close()
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            client = socket.create_connection((HOST, port), timeout=5)
+            client.sendall(b"GET /pi")  # incomplete: stays in the read state
+            time.sleep(0.02)
+            srv.terminate()
+            self.assertEqual(srv.wait(timeout=5), 0)
+            client.close()
+        finally:
+            if srv.poll() is None:
+                srv.kill()
 
     def test_listen_nothing(self):
         # port 0 and no TLS port -> nothing to listen on -> clean exit(1)

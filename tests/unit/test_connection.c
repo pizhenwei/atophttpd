@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -437,6 +438,62 @@ static void test_socket_send_all_partial(void)
     free(c);
 }
 
+/*
+ * The event loop relies on the backend reporting a full socket as -EAGAIN and
+ * naming the epoll interest to re-arm (conn->wait_events), rather than blocking
+ * or spinning; a hard read error must surface as a negative errno.
+ */
+static void test_socket_would_block_contract(void)
+{
+    connection_type *ct = get_conntype_by_name(CONN_TYPE_SOCKET);
+
+    int sv[2];
+    CHECK_EQ_INT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+
+    int small = 4096;
+    setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &small, sizeof(small));
+    int flags = fcntl(sv[0], F_GETFL, 0);
+    CHECK_EQ_INT(fcntl(sv[0], F_SETFL, flags | O_NONBLOCK), 0);
+
+    connection *c = conn_create(ct, -1, NULL);
+    c->fd = sv[0];
+
+    /* nothing to read yet: -EAGAIN, interest is readability */
+    char rb[8];
+    c->wait_events = 0;
+    CHECK_EQ_INT(conn_read(c, rb, sizeof(rb)), -EAGAIN);
+    CHECK_EQ_INT(c->wait_events, EPOLLIN);
+
+    /* fill the send buffer until the kernel pushes back */
+    char block[4096] = {0};
+    int w;
+    do {
+        w = conn_write(c, block, sizeof(block));
+    } while (w > 0);
+    CHECK_EQ_INT(w, -EAGAIN);
+    CHECK_EQ_INT(c->wait_events, EPOLLOUT);
+
+    /* same contract for the gather write */
+    c->wait_events = 0;
+    struct iovec iov = {.iov_base = block, .iov_len = sizeof(block)};
+    CHECK_EQ_INT(conn_writev(c, &iov, 1), -EAGAIN);
+    CHECK_EQ_INT(c->wait_events, EPOLLOUT);
+
+    conn_close(c);
+    close(sv[1]);
+    free(c);
+
+    /* a hard error is reported as a negative errno, not retried: reading a
+     * directory descriptor fails with EISDIR */
+    c = conn_create(ct, -1, NULL);
+    c->fd = open("/", O_RDONLY);
+    CHECK(c->fd >= 0);
+    int r = conn_read(c, rb, sizeof(rb));
+    CHECK(r < 0 && r != -EAGAIN);
+    conn_close(c);
+    free(c);
+}
+
 /* When the peer is gone the send path surfaces an error instead of looping, and
  * an empty gather list is a no-op. */
 static void test_socket_send_all_errors(void)
@@ -609,6 +666,7 @@ int main(void)
     RUN_TEST(test_socket_send_all_large);
     RUN_TEST(test_socket_send_all_partial);
     RUN_TEST(test_socket_send_all_errors);
+    RUN_TEST(test_socket_would_block_contract);
     RUN_TEST(test_socket_send_all_short_write);
     TEST_SUITE_END();
 }
