@@ -81,6 +81,24 @@ def _raw_request(path, method=b"GET", version=b"HTTP/1.1", host_header=True):
     return (status, headers, body)
 
 
+def _raw_exchange(raw, timeout=5):
+    """Send raw bytes, then read until the server closes. Returns what came back."""
+    s = socket.create_connection((HOST, _port), timeout=timeout)
+    s.sendall(raw)
+    data = b""
+    try:
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    except (socket.timeout, ConnectionResetError, BrokenPipeError, OSError):
+        pass
+    finally:
+        s.close()
+    return data
+
+
 def _gen_log():
     """Generate a short atop raw-log, return (log_dir, [sample_epochs])."""
     global _tmpdir
@@ -236,6 +254,19 @@ class RequestValidationTests(unittest.TestCase):
         status, _, body = _raw_request("/" + "a" * 2000)
         self.assertNotIn(b"200", status)
 
+    def test_request_line_without_version_rejected(self):
+        # no space before the version: nothing to split the URI from it
+        self.assertNotIn(b"200", _raw_exchange(b"GET /ping\r\n\r\n"))
+
+    def test_relative_uri_rejected(self):
+        # the URI must be absolute (start with '/')
+        self.assertNotIn(b"200", _raw_exchange(b"GET ping HTTP/1.1\r\n\r\n"))
+
+    def test_template_without_type_closed(self):
+        # /template needs a type= argument; without it no response is built
+        # and the connection is simply closed
+        self.assertEqual(_raw_exchange(b"GET /template HTTP/1.1\r\n\r\n"), b"")
+
 
 class ShowsampErrorTests(unittest.TestCase):
     def test_missing_timestamp(self):
@@ -245,6 +276,10 @@ class ShowsampErrorTests(unittest.TestCase):
     def test_missing_lables(self):
         _, _, body = _raw_request("/showsamp?timestamp=1")
         self.assertIn(b"missing lables", body)
+
+    def test_invalid_timestamp(self):
+        _, _, body = _raw_request("/showsamp?timestamp=0&lables=ALL")
+        self.assertIn(b"invalid timestamp", body)
 
     def test_bad_encoding(self):
         _, _, body = _raw_request(
@@ -266,7 +301,7 @@ class ShowsampErrorTests(unittest.TestCase):
 
 
 class ConnectionHandlingTests(unittest.TestCase):
-    # Exercise httpd_handle_request's read-loop edge cases.
+    # Exercise the event loop's request-reading edge cases.
 
     def test_slow_client_closed(self):
         # connect but never send a complete request; the server must time out
@@ -306,6 +341,55 @@ class ConnectionHandlingTests(unittest.TestCase):
             s.close()
         self.assertNotIn(b"200", data)
 
+    def test_eof_before_request_complete(self):
+        # the client gives up (clean FIN) halfway through the request line; the
+        # server must just drop the connection and keep serving others.
+        s = socket.create_connection((HOST, _port), timeout=5)
+        s.sendall(b"GET /pi")
+        s.close()
+        time.sleep(0.05)
+        status, _, body = _raw_request("/ping")
+        self.assertIn(b"200", status)
+
+    def test_reset_mid_request(self):
+        # the client aborts with a TCP RST (SO_LINGER 0) mid-request: a hard
+        # socket error, handled by dropping that client only.
+        import struct
+        s = socket.create_connection((HOST, _port), timeout=5)
+        s.sendall(b"GET /pi")
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        s.close()
+        time.sleep(0.05)
+        status, _, body = _raw_request("/ping")
+        self.assertIn(b"200", status)
+
+    def test_slow_reader_gets_full_response(self):
+        # A client that does not read for a while makes the server's send
+        # buffer fill up: the event loop must park that connection on EPOLLOUT
+        # and resume it, delivering the complete body, instead of blocking or
+        # truncating. A tiny receive buffer makes the stall likely.
+        if not _sample_epochs:
+            self.skipTest("no sample epochs available")
+        ts = _sample_epochs[len(_sample_epochs) // 2]
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        s.settimeout(10)
+        s.connect((HOST, _port))
+        s.sendall(("GET /showsamp?timestamp=%d&lables=ALL&encoding=none HTTP/1.1\r\n"
+                   "Host: t\r\n\r\n" % ts).encode())
+        time.sleep(1.0)  # let the server hit EAGAIN on a full socket
+        buf = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        head, _, body = buf.partition(b"\r\n\r\n")
+        length = int([l for l in head.split(b"\r\n")
+                      if l.lower().startswith(b"content-length:")][0].split(b":")[1])
+        self.assertEqual(len(body), length)
+
     def test_partial_then_complete(self):
         # send the request in two pieces; the read loop must reassemble it.
         s = socket.create_connection((HOST, _port), timeout=5)
@@ -321,6 +405,143 @@ class ConnectionHandlingTests(unittest.TestCase):
         s.close()
         self.assertIn(b"200", data)
         self.assertIn(b"pong", data)
+
+
+class TlsStalledClientTests(unittest.TestCase):
+    """Regression tests for issue #12: a TLS client that connects and stays
+    silent used to block the handshake -- and with it the whole accept loop,
+    plain HTTP included. Needs a TLS-enabled build (make USE_TLS=yes) and the
+    openssl CLI; skipped otherwise."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        if shutil.which("openssl") is None:
+            raise unittest.SkipTest("openssl CLI not available")
+
+        cls.certdir = tempfile.mkdtemp(prefix="atophttpd_tls_")
+        d = cls.certdir
+        cls.ca = os.path.join(d, "ca.crt")
+        run = lambda *a: subprocess.run(a, check=True, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=60)
+        run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", os.path.join(d, "ca.key"), "-out", cls.ca,
+            "-days", "2", "-subj", "/CN=ca")
+        for name in ("server", "client"):
+            run("openssl", "req", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", os.path.join(d, name + ".key"),
+                "-out", os.path.join(d, name + ".csr"), "-subj", "/CN=" + name)
+            run("openssl", "x509", "-req", "-in", os.path.join(d, name + ".csr"),
+                "-CA", cls.ca, "-CAkey", os.path.join(d, "ca.key"),
+                "-CAcreateserial", "-out", os.path.join(d, name + ".crt"),
+                "-days", "2")
+
+        cls.http_port = _free_port()
+        cls.tls_port = _free_port()
+        cls.server = subprocess.Popen(
+            [ATOPHTTPD_BIN, "-a", HOST, "-p", str(cls.http_port),
+             "-t%d" % cls.tls_port, "-A", HOST, "-P", _log_dir,
+             "-C", cls.ca,
+             "-c", os.path.join(d, "server.crt"), "-k", os.path.join(d, "server.key")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if cls.server.poll() is not None:
+                out = cls.server.stdout.read().decode(errors="replace")
+                cls._cleanup()
+                raise unittest.SkipTest("server has no TLS support: %s" % out[-200:])
+            try:
+                socket.create_connection((HOST, cls.tls_port), timeout=0.5).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            cls._cleanup()
+            raise RuntimeError("TLS server did not become ready")
+
+    @classmethod
+    def _cleanup(cls):
+        import shutil
+        if getattr(cls, "server", None) and cls.server.poll() is None:
+            cls.server.terminate()
+            try:
+                cls.server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cls.server.kill()
+        shutil.rmtree(cls.certdir, ignore_errors=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._cleanup()
+
+    def _tls_get(self, path):
+        import ssl
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.ca)
+        ctx.check_hostname = False
+        # the throwaway test CA has no keyUsage extension, which Python's
+        # strict X.509 mode (default since 3.13) rejects
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        ctx.load_cert_chain(os.path.join(self.certdir, "client.crt"),
+                            os.path.join(self.certdir, "client.key"))
+        raw = socket.create_connection((HOST, self.tls_port), timeout=3)
+        with ctx.wrap_socket(raw, server_hostname="localhost") as s:
+            s.sendall(("GET %s HTTP/1.1\r\nHost: t\r\n\r\n" % path).encode())
+            buf = b""
+            while True:
+                try:
+                    chunk = s.recv(65536)
+                except (ssl.SSLError, socket.timeout):
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+        return buf
+
+    def _http_ping(self):
+        s = socket.create_connection((HOST, self.http_port), timeout=3)
+        s.sendall(b"GET /ping HTTP/1.1\r\nHost: t\r\n\r\n")
+        buf = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return buf
+
+    def test_silent_tls_client_does_not_block_others(self):
+        # the exact reproducer from the issue: connect to the TLS port, say nothing
+        silent = socket.create_connection((HOST, self.tls_port), timeout=3)
+        try:
+            time.sleep(0.2)
+            t0 = time.time()
+            self.assertIn(b"200", self._http_ping())   # plain HTTP still served
+            self.assertLess(time.time() - t0, 2.0)
+            self.assertIn(b"pong", self._tls_get("/ping"))  # and so is TLS
+        finally:
+            silent.close()
+
+    def test_many_silent_tls_clients(self):
+        # several stalled handshakes at once must not exhaust or stall the loop
+        silent = [socket.create_connection((HOST, self.tls_port), timeout=3)
+                  for _ in range(20)]
+        try:
+            time.sleep(0.2)
+            self.assertIn(b"200", self._http_ping())
+            self.assertIn(b"pong", self._tls_get("/ping"))
+        finally:
+            for s in silent:
+                s.close()
+
+    def test_tls_large_response(self):
+        # exercises the partial-write / WANT_WRITE resume path over TLS
+        body = self._tls_get("/js/atop.js")
+        self.assertIn(b"200", body.split(b"\r\n", 1)[0])
+        head, _, payload = body.partition(b"\r\n\r\n")
+        length = int([l for l in head.split(b"\r\n")
+                      if l.lower().startswith(b"content-length:")][0].split(b":")[1])
+        self.assertEqual(len(payload), length)
 
 
 class ShowsampDataTests(unittest.TestCase):
@@ -383,10 +604,11 @@ class ShowsampDataTests(unittest.TestCase):
 class ConcurrencyTests(unittest.TestCase):
     """Hammer the server with many parallel requests.
 
-    This exercises the worker pool and the cache read/write lock: several
-    workers decode samples (read lock) while the acceptor periodically
-    re-parses the log (write lock). Under AddressSanitizer a use-after-free
-    or heap corruption from a cache race would abort the server here.
+    The server serves every connection from one epoll loop, so this checks
+    that interleaved requests are each answered completely and correctly (no
+    cross-talk between per-connection buffers) while the loop periodically
+    re-parses the log under the cache write lock. Under AddressSanitizer a
+    use-after-free or heap corruption would abort the server here.
     """
 
     @classmethod
@@ -422,11 +644,11 @@ class ConcurrencyTests(unittest.TestCase):
         return ("dropped repeatedly", b"")
 
     def test_parallel_showsamp(self):
-        # 8 client threads (> the 4 server workers) each issue a tight loop of
-        # requests: this saturates the worker pool and the cache read lock
-        # while keeping every connect->send pair prompt (a connection that
-        # stays silent is intentionally dropped by the slow-client guard, so we
-        # must not starve the senders the way a huge thread fan-out would).
+        # 8 client threads each issue a tight loop of requests: this keeps many
+        # connections in flight on the event loop at once while keeping every
+        # connect->send pair prompt (a connection that stays silent is
+        # intentionally dropped by the slow-client guard, so we must not starve
+        # the senders the way a huge thread fan-out would).
         from concurrent.futures import ThreadPoolExecutor
 
         def run(_):
@@ -506,6 +728,36 @@ class CliTests(unittest.TestCase):
                        "-k", "/x/key", "-P", "/no/such/atop/log/dir"])
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("parse failed", p.stderr)
+
+    def test_listen_failure(self):
+        # an address getaddrinfo cannot resolve: the listener cannot be set up
+        p = self._run(["-a", "999.999.999.999", "-p", str(_free_port()), "-P", _log_dir])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("failed listening", p.stderr)
+
+    def test_shutdown_with_client_connected(self):
+        # SIGTERM while a client is still mid-request: the loop must close it
+        # and exit cleanly (exercises the shutdown cleanup path).
+        port = _free_port()
+        srv = subprocess.Popen([ATOPHTTPD_BIN, "-a", HOST, "-p", str(port), "-P", _log_dir],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                try:
+                    socket.create_connection((HOST, port), timeout=0.5).close()
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            client = socket.create_connection((HOST, port), timeout=5)
+            client.sendall(b"GET /pi")  # incomplete: stays in the read state
+            time.sleep(0.02)
+            srv.terminate()
+            self.assertEqual(srv.wait(timeout=5), 0)
+            client.close()
+        finally:
+            if srv.poll() is None:
+                srv.kill()
 
     def test_listen_nothing(self):
         # port 0 and no TLS port -> nothing to listen on -> clean exit(1)

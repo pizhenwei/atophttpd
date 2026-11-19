@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
 # Build atophttpd and its unit/integration tests with ThreadSanitizer, then run
-# the whole suite. TSan detects data races between the acceptor thread, the
-# worker-pool threads and the cache updater; any race aborts the run with a
-# non-zero exit, so this doubles as a CI gate for the concurrency work (the
-# worker pool, the cache reader/writer lock and shared request-path state).
+# the whole suite. The server itself is a single-threaded epoll loop, but the
+# cache keeps its reader/writer lock for future use and the unit tests drive the
+# I/O paths from helper threads; TSan detects any data race there and aborts
+# the run with a non-zero exit, so this doubles as a CI gate.
 #
 # TSan is mutually exclusive with AddressSanitizer, hence a separate script.
 #
@@ -64,7 +64,7 @@ $CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o 
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o                  -o tests/unit/test_json      $LDLIBS
 
 # A benign, by-design "race": httpd_stop is a volatile sig_atomic_t written by
-# the SIGTERM handler and polled by the acceptor loop -- the standard async
+# the SIGTERM handler and polled by the event loop -- the standard async
 # shutdown idiom, which TSan cannot recognise. Everything else must be clean.
 # history_size=2 caps TSan's per-thread access history so the concurrency stress
 # test stays within memory on modest machines/CI runners (it still keeps enough

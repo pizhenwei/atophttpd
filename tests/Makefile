@@ -24,7 +24,8 @@ unit: $(UNIT_BINS)
 
 # TLS backend test, kept out of `unit` because it needs -DUSE_TLS and OpenSSL;
 # the CI "build (USE_TLS=yes)" job runs it. It #includes tls.c to reach the
-# static ssl_write_all and --wraps SSL_write/SSL_get_error.
+# static non-blocking handshake/read/write and --wraps SSL_accept/SSL_read/
+# SSL_write/SSL_get_error.
 unit-tls: unit/test_tls
 	@rc=0; for t in $^; do echo "--- $$t ---"; ./$$t || rc=1; done; exit $$rc
 
@@ -52,7 +53,7 @@ unit/test_json: unit/test_json.c $(ROOT)/json.c $(ROOT)/output.c $(ROOT)/version
 # but is NOT passed to the compiler -- hence the explicit source list instead of
 # $^, which would compile tls.c twice and clash.
 unit/test_tls: unit/test_tls.c $(ROOT)/tls.c $(ROOT)/connection.c $(ROOT)/socket.c $(ROOT)/log.c
-	$(CC) $(CFLAGS) -DUSE_TLS -Wl,--wrap=SSL_write,--wrap=SSL_get_error,--wrap=SSL_get_fd \
+	$(CC) $(CFLAGS) -DUSE_TLS -Wl,--wrap=SSL_accept,--wrap=SSL_read,--wrap=SSL_write,--wrap=SSL_get_error \
 		unit/test_tls.c $(ROOT)/connection.c $(ROOT)/socket.c $(ROOT)/log.c \
 		-o $@ $(LDLIBS) -lssl -lcrypto
 

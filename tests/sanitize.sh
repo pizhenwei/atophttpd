@@ -59,10 +59,11 @@ $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                            
 $CC $CFLAGS -Wl,--wrap=write,--wrap=writev tests/unit/test_connection.c connection.o socket.o tls.o log.o          -o tests/unit/test_connection $LDLIBS
 $CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o version.o -o tests/unit/test_rawlog $LDLIBS
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o                  -o tests/unit/test_json      $LDLIBS
-# TLS backend test: #includes tls.c with -DUSE_TLS (so the real ssl_write_all is
-# sanitized, not the stub) and interposes on SSL_write/SSL_get_error/SSL_get_fd.
+# TLS backend test: #includes tls.c with -DUSE_TLS (so the real non-blocking
+# handshake/read/write code is sanitized, not the stub) and interposes on
+# SSL_accept/SSL_read/SSL_write/SSL_get_error.
 # Reuses the already-sanitized connection/socket/log objects.
-$CC $CFLAGS -DUSE_TLS -Wl,--wrap=SSL_write,--wrap=SSL_get_error,--wrap=SSL_get_fd \
+$CC $CFLAGS -DUSE_TLS -Wl,--wrap=SSL_accept,--wrap=SSL_read,--wrap=SSL_write,--wrap=SSL_get_error \
 	tests/unit/test_tls.c connection.o socket.o log.o -o tests/unit/test_tls $LDLIBS -lssl -lcrypto
 
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"

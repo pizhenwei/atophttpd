@@ -392,12 +392,10 @@ int rawlog_get_record(time_t ts, char *labels, connection *conn, struct output *
      * Resolve the record under the cache read lock, then copy out everything
      * the rest of the function needs (the file name, the record offset and the
      * header flags) and release the lock *before* any file I/O or the network
-     * send. Holding the read lock across those would let a single slow-reading
-     * client keep it for up to the socket send timeout, stalling the cache
-     * writer -- and therefore the acceptor thread that takes the write lock --
-     * which would stop new connections from being accepted. The raw-log file
-     * stays valid on disk by path even if the writer later frees or rebuilds
-     * the cache entry, so opening it lock-free is safe.
+     * send. Holding the read lock across those would stall the cache writer
+     * for as long as they take. The raw-log file stays valid on disk by path
+     * even if the writer later frees or rebuilds the cache entry, so opening it
+     * lock-free is safe.
      */
     cache_rdlock();
     struct cache_t *cache = cache_get(ts, &off);

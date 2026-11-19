@@ -12,12 +12,11 @@
 
 #include "httpd.h"
 
-#include <fcntl.h>
+#include <errno.h>
 #include <limits.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#include <poll.h>
 #include <stdlib.h>
 
 #ifdef USE_TLS
@@ -90,6 +89,11 @@ static int tls_configure(void *priv, int reconfigure)
 
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
 
+    /* Writes are driven from a non-blocking event loop: report partial progress
+     * instead of waiting for the whole buffer, and tolerate the caller retrying
+     * with a buffer at a different address after WANT_WRITE. */
+    SSL_CTX_set_mode(ctx, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+
     SSL_CTX_free(tls_ctx);
     tls_ctx = ctx;
     return 0;
@@ -153,12 +157,40 @@ static int conn_tls_accept(connection *listener, connection *conn)
     }
 
     SSL_set_fd(tls_conn->ssl, tls_conn->c.fd);
-    if (SSL_accept(tls_conn->ssl) <= 0) {
-        printf("SSL_TLS handshake failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        return -errno;
-    }
-
+    /* The handshake itself is driven by conn_tls_handshake() from the event
+     * loop, one non-blocking step at a time; a client that opens a connection
+     * and stays silent stalls only itself this way. */
     return 0;
+}
+
+/* One non-blocking handshake step on the (already accepted) connection. The
+ * fd must be non-blocking; WANT_READ/WANT_WRITE tell the event loop which
+ * epoll interest to re-arm before calling us again. */
+static int conn_tls_handshake(connection *conn)
+{
+    tls_connection *tls_conn = (tls_connection *)conn;
+
+    if (tls_conn->ssl == NULL)
+        return -EINVAL;
+
+    /* All connections share this thread's OpenSSL error queue: clear it so a
+     * stale error from another client cannot skew SSL_get_error() below. */
+    ERR_clear_error();
+    int n = SSL_accept(tls_conn->ssl);
+    if (n == 1)
+        return 0;
+
+    switch (SSL_get_error(tls_conn->ssl, n)) {
+    case SSL_ERROR_WANT_READ:
+        conn->wait_events = EPOLLIN;
+        return -EAGAIN;
+    case SSL_ERROR_WANT_WRITE:
+        conn->wait_events = EPOLLOUT;
+        return -EAGAIN;
+    default:
+        printf("SSL/TLS handshake failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        return -EIO;
+    }
 }
 
 static void conn_shutdown_tls(connection *conn)
@@ -191,89 +223,34 @@ static void conn_close_tls(connection *conn)
     return;
 }
 
-/* One TLS record. poll() below is what actually enforces the deadline; this cap
- * just bounds the work done per iteration and keeps the deadline re-checked
- * frequently (it is no longer load-bearing for the timeout itself). */
-#define TLS_WRITE_CHUNK (16 * 1024)
-
 /*
- * Send the whole buffer, giving up once CONN_SEND_TIMEOUT_MS of wall-clock time
- * has elapsed. The socket is switched to non-blocking for the duration: on a
- * blocking socket SSL_write() retries the underlying write() internally as long
- * as a slow-but-steady reader keeps draining, so a single call can run for
- * minutes and our between-call deadline check never fires. Non-blocking turns
- * each stall into WANT_WRITE/WANT_READ, which we wait on with poll() bounded by
- * the *remaining* budget -- making the deadline a true wall-clock bound.
- *
- * Returns the number of bytes sent (a short count signals truncation to the
- * caller, matching the plain-socket path) or -EIO if nothing could be sent.
+ * Single non-blocking TLS write: one record (or a partial one) per call. On
+ * WANT_READ/WANT_WRITE the caller is told which epoll interest to re-arm
+ * (a renegotiation may flip the direction) and retries with the SAME buffer,
+ * which is required by OpenSSL.
  */
-static int ssl_write_all(SSL *ssl, const char *buf, size_t len)
-{
-    int fd = SSL_get_fd(ssl);
-    int flags = (fd >= 0) ? fcntl(fd, F_GETFL) : -1;
-    size_t sent = 0;
-    long long deadline = conn_now_ms() + CONN_SEND_TIMEOUT_MS;
-    int rc;
-
-    if (fd < 0 || flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
-        return -EIO;
-
-    /* Default-mode SSL_write writes the whole chunk or none; on WANT_WRITE the
-     * same args must be retried, which holds here since sent/chunk only advance
-     * on success. */
-    while (sent < len) {
-        long long remaining = deadline - conn_now_ms();
-        if (remaining <= 0)
-            break;
-
-        size_t chunk = len - sent;
-        if (chunk > TLS_WRITE_CHUNK)
-            chunk = TLS_WRITE_CHUNK;
-
-        int n = SSL_write(ssl, buf + sent, (int)chunk);
-        if (n > 0) {
-            sent += (size_t)n;
-            continue;
-        }
-
-        int err = SSL_get_error(ssl, n);
-        short events;
-        if (err == SSL_ERROR_WANT_WRITE)
-            events = POLLOUT;
-        else if (err == SSL_ERROR_WANT_READ)
-            events = POLLIN; /* a renegotiation may need to read first */
-        else {
-            if (sent == 0) {
-                rc = -EIO;
-                goto restore;
-            }
-            break;
-        }
-
-        /* Block until the socket is ready again, but never past the budget. */
-        struct pollfd pfd = {.fd = fd, .events = events};
-        int pr = poll(&pfd, 1, (int)remaining);
-        if (pr < 0 && errno == EINTR)
-            continue;
-        if (pr <= 0)
-            break; /* deadline reached or poll error: stop, return what we sent */
-    }
-
-    rc = (int)sent;
-restore:
-    fcntl(fd, F_SETFL, flags); /* leave the caller's blocking mode untouched */
-    return rc;
-}
-
 static int conn_write_tls(connection *conn, const void *data, size_t data_len)
 {
     tls_connection *tls_conn = (tls_connection *)conn;
-    if (tls_conn->ssl == NULL) {
-        return -EINVAL;
-    }
 
-    return ssl_write_all(tls_conn->ssl, data, data_len);
+    if (tls_conn->ssl == NULL)
+        return -EINVAL;
+
+    ERR_clear_error();
+    int n = SSL_write(tls_conn->ssl, data, (int)data_len);
+    if (n > 0)
+        return n;
+
+    switch (SSL_get_error(tls_conn->ssl, n)) {
+    case SSL_ERROR_WANT_READ:
+        conn->wait_events = EPOLLIN;
+        return -EAGAIN;
+    case SSL_ERROR_WANT_WRITE:
+        conn->wait_events = EPOLLOUT;
+        return -EAGAIN;
+    default:
+        return -EIO;
+    }
 }
 
 static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt)
@@ -301,7 +278,7 @@ static int conn_writev_tls(connection *conn, const struct iovec *iov, int iovcnt
         offset += iov[i].iov_len;
     }
 
-    int ret = ssl_write_all(tls_conn->ssl, ssl_buf, iov_bytes_len);
+    int ret = conn_write_tls(conn, ssl_buf, iov_bytes_len);
 
     free(ssl_buf);
     return ret;
@@ -315,15 +292,30 @@ static int conn_read_tls(connection *conn, void *buf, size_t buf_len)
         return -EINVAL;
     }
 
-    int ret = SSL_read(tls_conn->ssl, buf, buf_len);
-    if (ret <= 0) {
-        if (errno != EAGAIN) {
-            return -errno;
-        }
+    ERR_clear_error();
+    int n = SSL_read(tls_conn->ssl, buf, (int)buf_len);
+    if (n > 0)
+        return n;
 
+    switch (SSL_get_error(tls_conn->ssl, n)) {
+    case SSL_ERROR_ZERO_RETURN:
+        return 0; /* the peer closed the TLS session cleanly */
+    case SSL_ERROR_WANT_READ:
+        conn->wait_events = EPOLLIN;
         return -EAGAIN;
+    case SSL_ERROR_WANT_WRITE:
+        conn->wait_events = EPOLLOUT; /* a renegotiation may need to write first */
+        return -EAGAIN;
+    case SSL_ERROR_SYSCALL:
+        /* a non-blocking raw read below the TLS layer surfaces here */
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            conn->wait_events = EPOLLIN;
+            return -EAGAIN;
+        }
+        return -EIO;
+    default:
+        return -EIO;
     }
-    return ret;
 }
 
 static connection_type CT_TLS = {.get_type = conn_tls_get_type,
@@ -336,6 +328,7 @@ static connection_type CT_TLS = {.get_type = conn_tls_get_type,
 
                                  .listen = conn_tls_listen,
 
+                                 .handshake = conn_tls_handshake,
                                  .accept = conn_tls_accept,
                                  .shutdown = conn_shutdown_tls,
                                  .close = conn_close_tls,
