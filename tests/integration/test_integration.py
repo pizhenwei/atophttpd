@@ -301,7 +301,7 @@ class ShowsampErrorTests(unittest.TestCase):
 
 
 class ConnectionHandlingTests(unittest.TestCase):
-    # Exercise httpd_handle_request's read-loop edge cases.
+    # Exercise the event loop's request-reading edge cases.
 
     def test_slow_client_closed(self):
         # connect but never send a complete request; the server must time out

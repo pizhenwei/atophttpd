@@ -14,7 +14,7 @@
 #include <linux/tcp.h>
 #include <linux/types.h>
 #include <netdb.h>
-#include <pthread.h>
+
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -235,18 +235,23 @@ static void client_respond(struct client *cli, const char *status, const char *b
     cli->outsent = 0;
 }
 
-static void http_response_200(struct client *cli, const char *body, size_t len, char *encoding,
+/* The handlers keep their original (connection *) signatures; the event loop's
+ * per-connection state hangs off conn->priv. */
+static void http_response_200(connection *conn, char *buf, size_t len, char *encoding,
                               char *content_type)
 {
-    client_respond(cli, http_200, body, len, encoding, content_type);
+    client_respond(conn->priv, http_200, buf, len, encoding, content_type);
+}
+
+static void http_response_404(connection *conn)
+{
+    client_respond_line(conn->priv, http_404);
 }
 
 static void http_show_samp_done(struct output *op, connection *conn)
 {
-    struct client *cli = conn->priv;
-
     if (op->encoding == http_content_type_none) {
-        http_response_200(cli, op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
+        http_response_200(conn, op->ob.buf, op->ob.offset, op->encoding, http_content_type_html);
         return;
     }
 
@@ -256,16 +261,16 @@ static void http_show_samp_done(struct output *op, connection *conn)
 
     if (!compbuf ||
         compress((Bytef *)compbuf, &complen, (Bytef *)op->ob.buf, op->ob.offset) != Z_OK) {
-        client_respond_line(cli, http_404);
+        http_response_404(conn);
         free(compbuf);
         return;
     }
 
-    http_response_200(cli, compbuf, complen, http_content_type_deflate, http_content_type_html);
+    http_response_200(conn, compbuf, complen, http_content_type_deflate, http_content_type_html);
     free(compbuf);
 }
 
-static void http_showsamp(char *req, struct client *cli)
+static void http_showsamp(char *req, connection *conn)
 {
     time_t timestamp = 0;
     char lables[1024];
@@ -273,19 +278,19 @@ static void http_showsamp(char *req, struct client *cli)
 
     if (http_arg_long(req, "timestamp", &timestamp) < 0) {
         char *err = "missing timestamp\r\n";
-        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
         return;
     }
 
     if (timestamp <= 0) {
         char *err = "invalid timestamp\r\n";
-        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
         return;
     }
 
     if (http_arg_str(req, "lables", lables, sizeof(lables)) < 0) {
         char *err = "missing lables\r\n";
-        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
         return;
     }
 
@@ -301,15 +306,15 @@ static void http_showsamp(char *req, struct client *cli)
             op.encoding = http_content_type_deflate;
         } else {
             char *err = "encoding supports none/deflate only\r\n";
-            http_response_200(cli, err, strlen(err), http_content_type_none,
+            http_response_200(conn, err, strlen(err), http_content_type_none,
                               http_content_type_html);
             return; /* op.ob.buf is NULL here, nothing to free */
         }
     }
 
-    if (rawlog_get_record(timestamp, lables, cli->conn, &op) < 0) {
+    if (rawlog_get_record(timestamp, lables, conn, &op) < 0) {
         char *err = "missing sample\r\n";
-        http_response_200(cli, err, strlen(err), http_content_type_none, http_content_type_html);
+        http_response_200(conn, err, strlen(err), http_content_type_none, http_content_type_html);
     }
 
     free(op.ob.buf);
@@ -327,18 +332,18 @@ static void http_showsamp(char *req, struct client *cli)
 IMPORT_BIN(".rodata", "http/help.html", help);
 extern char help[], help_end[];
 
-static void http_help(struct client *cli)
+static void http_help(connection *conn)
 {
-    http_response_200(cli, help, help_end - help, http_content_type_none, http_content_type_html);
+    http_response_200(conn, help, help_end - help, http_content_type_none, http_content_type_html);
 }
 
 /* Build favicon.ico into atop binary */
 IMPORT_BIN(".rodata", "http/favicon.ico", favicon);
 extern char favicon[], favicon_end[];
 
-static void http_favicon(struct client *cli)
+static void http_favicon(connection *conn)
 {
-    http_response_200(cli, favicon, favicon_end - favicon, http_content_type_none,
+    http_response_200(conn, favicon, favicon_end - favicon, http_content_type_none,
                       http_content_type_html);
 }
 
@@ -346,9 +351,9 @@ static void http_favicon(struct client *cli)
 IMPORT_BIN(".rodata", "http/index.html", http_index_html);
 extern char http_index_html[], http_index_html_end[];
 
-static void http_index(struct client *cli)
+static void http_index(connection *conn)
 {
-    http_response_200(cli, http_index_html, http_index_html_end - http_index_html,
+    http_response_200(conn, http_index_html, http_index_html_end - http_index_html,
                       http_content_type_none, http_content_type_html);
 }
 
@@ -356,9 +361,9 @@ static void http_index(struct client *cli)
 IMPORT_BIN(".rodata", "http/js/atop.js", atop_js);
 extern char atop_js[], atop_js_end[];
 
-static void http_get_atop_js(struct client *cli)
+static void http_get_atop_js(connection *conn)
 {
-    http_response_200(cli, atop_js, atop_js_end - atop_js, http_content_type_none,
+    http_response_200(conn, atop_js, atop_js_end - atop_js, http_content_type_none,
                       http_content_type_javascript);
 }
 
@@ -366,19 +371,19 @@ static void http_get_atop_js(struct client *cli)
 IMPORT_BIN(".rodata", "http/js/atop_parse.js", atop_parse_js);
 extern char atop_parse_js[], atop_parse_js_end[];
 
-static void http_get_atop_parse_js(struct client *cli)
+static void http_get_atop_parse_js(connection *conn)
 {
-    http_response_200(cli, atop_parse_js, atop_parse_js_end - atop_parse_js, http_content_type_none,
-                      http_content_type_javascript);
+    http_response_200(conn, atop_parse_js, atop_parse_js_end - atop_parse_js,
+                      http_content_type_none, http_content_type_javascript);
 }
 
 /* Build atop_compare_fc.js into atop binary */
 IMPORT_BIN(".rodata", "http/js/atop_compare_fc.js", atop_compare_fc_js);
 extern char atop_compare_fc_js[], atop_compare_fc_js_end[];
 
-static void http_get_atop_compare_fc_js(struct client *cli)
+static void http_get_atop_compare_fc_js(connection *conn)
 {
-    http_response_200(cli, atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js,
+    http_response_200(conn, atop_compare_fc_js, atop_compare_fc_js_end - atop_compare_fc_js,
                       http_content_type_none, http_content_type_javascript);
 }
 
@@ -386,9 +391,9 @@ static void http_get_atop_compare_fc_js(struct client *cli)
 IMPORT_BIN(".rodata", "http/css/atop.css", http_css);
 extern char http_css[], http_css_end[];
 
-static void http_get_css(struct client *cli)
+static void http_get_css(connection *conn)
 {
-    http_response_200(cli, http_css, http_css_end - http_css, http_content_type_none,
+    http_response_200(conn, http_css, http_css_end - http_css, http_content_type_none,
                       http_content_type_css);
 }
 
@@ -408,52 +413,52 @@ extern char disk_html_template[], disk_html_template_end[];
 IMPORT_BIN(".rodata", "http/template/html/command_line.html", command_line_html_template);
 extern char command_line_html_template[], command_line_html_template_end[];
 
-static void http_get_template_header(struct client *cli)
+static void http_get_template_header(connection *conn)
 {
-    http_response_200(cli, header_html_template, header_html_template_end - header_html_template,
+    http_response_200(conn, header_html_template, header_html_template_end - header_html_template,
                       http_content_type_none, http_content_type_html);
 }
 
-static void http_get_template(char *req, struct client *cli)
+static void http_get_template(char *req, connection *conn)
 {
     char template_type[256];
     if (http_arg_str(req, "type", template_type, sizeof(template_type)) < 0)
         return;
 
     if (!strcmp(template_type, "generic")) {
-        http_response_200(cli, generic_html_template,
+        http_response_200(conn, generic_html_template,
                           generic_html_template_end - generic_html_template, http_content_type_none,
                           http_content_type_html);
     } else if (!strcmp(template_type, "memory")) {
-        http_response_200(cli, memory_html_template,
+        http_response_200(conn, memory_html_template,
                           memory_html_template_end - memory_html_template, http_content_type_none,
                           http_content_type_html);
     } else if (!strcmp(template_type, "disk")) {
-        http_response_200(cli, disk_html_template, disk_html_template_end - disk_html_template,
+        http_response_200(conn, disk_html_template, disk_html_template_end - disk_html_template,
                           http_content_type_none, http_content_type_html);
     } else if (!strcmp(template_type, "command_line")) {
-        http_response_200(cli, command_line_html_template,
+        http_response_200(conn, command_line_html_template,
                           command_line_html_template_end - command_line_html_template,
                           http_content_type_none, http_content_type_html);
     } else {
-        client_respond_line(cli, http_404);
+        http_response_404(conn);
     }
 }
 
-static void http_ping(struct client *cli)
+static void http_ping(connection *conn)
 {
     char *pong = "pong\r\n";
 
-    http_response_200(cli, pong, strlen(pong), http_content_type_none, http_content_type_html);
+    http_response_200(conn, pong, strlen(pong), http_content_type_none, http_content_type_html);
 }
 
-static void http_process_request(char *req, struct client *cli)
+static void http_process_request(char *req, connection *conn)
 {
     char location[URL_LEN] = {0};
     char *c;
 
     if (strlen(req) >= URL_LEN) {
-        client_respond_line(cli, http_404);
+        http_response_404(conn);
         return;
     }
 
@@ -464,34 +469,34 @@ static void http_process_request(char *req, struct client *cli)
         memcpy(location, req, strlen(req));
 
     if (strlen(location) == 0) {
-        http_index(cli);
+        http_index(conn);
         return;
     }
 
     if (!strcmp(location, "ping"))
-        http_ping(cli);
+        http_ping(conn);
     else if (!strcmp(location, "help"))
-        http_help(cli);
+        http_help(conn);
     else if (!strcmp(location, "favicon.ico"))
-        http_favicon(cli);
+        http_favicon(conn);
     else if (!strcmp(location, "showsamp"))
-        http_showsamp(req, cli);
+        http_showsamp(req, conn);
     else if (!strcmp(location, "index.html"))
-        http_index(cli);
+        http_index(conn);
     else if (!strcmp(location, "js/atop.js"))
-        http_get_atop_js(cli);
+        http_get_atop_js(conn);
     else if (!strcmp(location, "js/atop_parse.js"))
-        http_get_atop_parse_js(cli);
+        http_get_atop_parse_js(conn);
     else if (!strcmp(location, "js/atop_compare_fc.js"))
-        http_get_atop_compare_fc_js(cli);
+        http_get_atop_compare_fc_js(conn);
     else if (!strcmp(location, "css/atop.css"))
-        http_get_css(cli);
+        http_get_css(conn);
     else if (!strcmp(location, "template_header"))
-        http_get_template_header(cli);
+        http_get_template_header(conn);
     else if (!strcmp(location, "template"))
-        http_get_template(req, cli);
+        http_get_template(req, conn);
     else {
-        client_respond_line(cli, http_404);
+        http_response_404(conn);
     }
 }
 
@@ -626,7 +631,7 @@ static void client_parse_request(struct client *cli)
     memcpy(httpreq, uri, urilen);
     httpreq[urilen] = '\0';
 
-    http_process_request(httpreq, cli);
+    http_process_request(httpreq, cli->conn);
 
     if (!cli->out) /* malformed, unrouted, or allocation failure */
         goto drop;
@@ -727,6 +732,10 @@ static void *httpd_routine(connection **listeners, char *log_path)
                     listener->type->get_type(NULL), listener->port);
             exit(1);
         }
+
+        /* a client that resets between epoll_wait() and accept() must not
+         * leave accept() blocking the whole loop */
+        fcntl(listener->fd, F_SETFL, fcntl(listener->fd, F_GETFL) | O_NONBLOCK);
 
         lc = calloc(1, sizeof(struct client));
         if (!lc)
