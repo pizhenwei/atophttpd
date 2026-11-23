@@ -411,12 +411,17 @@ class TlsStalledClientTests(unittest.TestCase):
     """Regression tests for issue #12: a TLS client that connects and stays
     silent used to block the handshake -- and with it the whole accept loop,
     plain HTTP included. Needs a TLS-enabled build (make USE_TLS=yes) and the
-    openssl CLI; skipped otherwise."""
+    openssl CLI; skipped otherwise, unless ATOPHTTPD_REQUIRE_TLS is set (the
+    USE_TLS=yes CI job does), in which case a missing prerequisite or a server
+    that fails to start is an error, not a skip."""
 
     @classmethod
     def setUpClass(cls):
         import shutil
+        require = bool(os.environ.get("ATOPHTTPD_REQUIRE_TLS"))
         if shutil.which("openssl") is None:
+            if require:
+                raise RuntimeError("openssl CLI not available")
             raise unittest.SkipTest("openssl CLI not available")
 
         cls.certdir = tempfile.mkdtemp(prefix="atophttpd_tls_")
@@ -450,6 +455,8 @@ class TlsStalledClientTests(unittest.TestCase):
             if cls.server.poll() is not None:
                 out = cls.server.stdout.read().decode(errors="replace")
                 cls._cleanup()
+                if require:
+                    raise RuntimeError("TLS server failed to start: %s" % out[-200:])
                 raise unittest.SkipTest("server has no TLS support: %s" % out[-200:])
             try:
                 socket.create_connection((HOST, cls.tls_port), timeout=0.5).close()

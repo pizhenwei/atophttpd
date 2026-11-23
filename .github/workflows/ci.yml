@@ -38,6 +38,15 @@ jobs:
         if: ${{ matrix.use_tls == 'yes' }}
         run: make -C tests unit-tls
 
+      # The other integration jobs build without TLS and skip this group; run it
+      # here against the TLS build. ATOPHTTPD_REQUIRE_TLS turns an unexpected
+      # server startup failure into a job failure instead of a skip.
+      - name: Run TLS integration tests (issue #12 regression)
+        if: ${{ matrix.use_tls == 'yes' }}
+        env:
+          ATOPHTTPD_REQUIRE_TLS: "1"
+        run: python3 -m unittest -v tests.integration.test_integration.TlsStalledClientTests
+
   # ---------------------------------------------------------------------------
   # Unit + integration tests with gcov coverage, gated at >= 90% line coverage.
   # ---------------------------------------------------------------------------

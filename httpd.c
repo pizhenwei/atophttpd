@@ -109,6 +109,9 @@ static char *http_content_type_javascript = "application/javascript";
 /* Budget (ms) for flushing one response to a slow client. */
 #define RESPONSE_TIMEOUT_MS 10000
 #define MAX_EVENTS 64
+/* Bytes flushed to one client per event-loop wakeup, so a fast reader of a
+ * large response cannot starve the deadline sweep or the other connections. */
+#define WRITE_BUDGET (256 * 1024)
 
 enum cli_state {
     CLI_LISTENER,  /* epoll node is a listener: accept on EPOLLIN */
@@ -528,8 +531,14 @@ static void client_handshake(struct client *cli)
 static void client_write(struct client *cli)
 {
     connection *conn = cli->conn;
+    size_t budget = WRITE_BUDGET;
 
     while (cli->outsent < cli->outlen) {
+        if (!budget) { /* yield; epoll fires again at once if still writable */
+            client_arm(cli, EPOLLOUT);
+            return;
+        }
+
         int ret = conn_write(conn, cli->out + cli->outsent, cli->outlen - cli->outsent);
 
         if (ret == -EAGAIN) {
@@ -541,6 +550,7 @@ static void client_write(struct client *cli)
             return;
         }
         cli->outsent += (size_t)ret;
+        budget = (size_t)ret >= budget ? 0 : budget - (size_t)ret;
     }
 
     /* response fully flushed; one request per connection, close now */
