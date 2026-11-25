@@ -62,6 +62,10 @@ $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                            
 $CC $CFLAGS -Wl,--wrap=write,--wrap=writev tests/unit/test_connection.c connection.o socket.o tls.o log.o          -o tests/unit/test_connection $LDLIBS
 $CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o version.o -o tests/unit/test_rawlog $LDLIBS
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o                  -o tests/unit/test_json      $LDLIBS
+# test_httpd_write.c #includes httpd.c (.incbin paths run from here, the ROOT)
+$CC $CFLAGS tests/unit/test_httpd_write.c connection.o socket.o tls.o log.o \
+	http_args.o cache.o json.o output.o rawlog.o version.o      \
+	-o tests/unit/test_httpd_write $LDLIBS
 
 # A benign, by-design "race": httpd_stop is a volatile sig_atomic_t written by
 # the SIGTERM handler and polled by the event loop -- the standard async
@@ -73,7 +77,7 @@ export TSAN_OPTIONS="halt_on_error=1:history_size=2:suppressions=$ROOT/tests/tsa
 
 echo ">> running thread-sanitized unit tests"
 rc=0
-for t in test_cache test_output test_http_args test_connection test_rawlog test_json; do
+for t in test_cache test_output test_http_args test_connection test_rawlog test_json test_httpd_write; do
 	echo "--- $t ---"
 	RAWLOG_SAMPLE="$RAWLOG_SAMPLE" "./tests/unit/$t" || rc=1
 done

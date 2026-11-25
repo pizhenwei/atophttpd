@@ -59,6 +59,10 @@ $CC $CFLAGS tests/unit/test_http_args.c  http_args.o                            
 $CC $CFLAGS -Wl,--wrap=write,--wrap=writev tests/unit/test_connection.c connection.o socket.o tls.o log.o          -o tests/unit/test_connection $LDLIBS
 $CC $CFLAGS tests/unit/test_rawlog.c     rawlog.o cache.o json.o output.o log.o version.o -o tests/unit/test_rawlog $LDLIBS
 $CC $CFLAGS tests/unit/test_json.c       json.o output.o version.o                  -o tests/unit/test_json      $LDLIBS
+# test_httpd_write.c #includes httpd.c (.incbin paths run from here, the ROOT)
+$CC $CFLAGS tests/unit/test_httpd_write.c connection.o socket.o tls.o log.o \
+	http_args.o cache.o json.o output.o rawlog.o version.o      \
+	-o tests/unit/test_httpd_write $LDLIBS
 # TLS backend test: #includes tls.c with -DUSE_TLS (so the real non-blocking
 # handshake/read/write code is sanitized, not the stub) and interposes on
 # SSL_accept/SSL_read/SSL_write/SSL_get_error.
@@ -71,7 +75,7 @@ export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
 echo ">> running sanitized unit tests (leak detection on)"
 export ASAN_OPTIONS="abort_on_error=1:detect_leaks=1"
 rc=0
-for t in test_cache test_output test_http_args test_connection test_rawlog test_json test_tls; do
+for t in test_cache test_output test_http_args test_connection test_rawlog test_json test_tls test_httpd_write; do
 	echo "--- $t ---"
 	RAWLOG_SAMPLE="$RAWLOG_SAMPLE" "./tests/unit/$t" || rc=1
 done

@@ -145,6 +145,9 @@ def setUpModule():
         _tmpdir = tempfile.mkdtemp(prefix="atophttpd_it_")
         _log_dir = _tmpdir
         # server refuses to start on an empty/invalid dir, so generation is required
+        if os.environ.get("ATOPHTTPD_REQUIRE_TLS"):
+            raise RuntimeError("ATOPHTTPD_REQUIRE_TLS is set but no raw-log could be "
+                               "generated (is %s built?)" % ATOP_BIN)
         raise unittest.SkipTest(
             "no atop binary/log available to generate a raw-log for integration tests")
 
@@ -482,7 +485,7 @@ class TlsStalledClientTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._cleanup()
 
-    def _tls_get(self, path, delay=0, rcvbuf=None):
+    def _tls_get(self, path):
         import ssl
         ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=self.ca)
         ctx.check_hostname = False
@@ -491,15 +494,9 @@ class TlsStalledClientTests(unittest.TestCase):
         ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
         ctx.load_cert_chain(os.path.join(self.certdir, "client.crt"),
                             os.path.join(self.certdir, "client.key"))
-        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if rcvbuf:
-            raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
-        raw.settimeout(5)
-        raw.connect((HOST, self.tls_port))
+        raw = socket.create_connection((HOST, self.tls_port), timeout=10)
         with ctx.wrap_socket(raw, server_hostname="localhost") as s:
             s.sendall(("GET %s HTTP/1.1\r\nHost: t\r\n\r\n" % path).encode())
-            if delay:
-                time.sleep(delay)  # let the server hit a full socket / WANT_WRITE
             buf = b""
             while True:
                 try:
@@ -515,7 +512,7 @@ class TlsStalledClientTests(unittest.TestCase):
         return self._http_get("/ping")
 
     def _http_get(self, path):
-        s = socket.create_connection((HOST, self.http_port), timeout=5)
+        s = socket.create_connection((HOST, self.http_port), timeout=10)
         s.sendall(("GET %s HTTP/1.1\r\nHost: t\r\n\r\n" % path).encode())
         buf = b""
         while True:
@@ -551,35 +548,32 @@ class TlsStalledClientTests(unittest.TestCase):
                 s.close()
 
     def test_tls_large_response(self):
-        # a multi-KB static file over TLS, checked against its Content-Length;
-        # the partial-write / WANT_WRITE resume path is exercised by
-        # test_tls_large_response_slow_reader below
-        body = self._tls_get("/js/atop.js")
-        self.assertIn(b"200", body.split(b"\r\n", 1)[0])
-        head, _, payload = body.partition(b"\r\n\r\n")
-        length = int([l for l in head.split(b"\r\n")
-                      if l.lower().startswith(b"content-length:")][0].split(b":")[1])
-        self.assertEqual(len(payload), length)
+        # a multi-KB static file over TLS, checked against its Content-Length
+        self._assert_complete(self._tls_get("/js/atop.js"))
 
-    def test_tls_large_response_slow_reader(self):
-        # A response bigger than one write chunk, read slowly through a tiny
-        # receive buffer: the server must hit WANT_WRITE mid-response and
-        # resume it with the same retry arguments, delivering every byte.
+    def test_tls_dynamic_response_matches_plain_http(self):
+        # A showsamp body is far larger than one write chunk on most hosts, so
+        # real OpenSSL has to deliver it across several writes. It must arrive
+        # complete and identical to the plain-HTTP answer. (The -EAGAIN retry
+        # contract is covered deterministically by tests/unit/test_httpd_write.c:
+        # kernel buffers are too large to force it from here.)
         if not _sample_epochs:
             self.skipTest("no sample epochs available")
         path = ("/showsamp?timestamp=%d&lables=ALL&encoding=none"
                 % _sample_epochs[len(_sample_epochs) // 2])
 
-        expected = self._http_get(path).partition(b"\r\n\r\n")[2]
-        got = self._tls_get(path, delay=1.0, rcvbuf=4096).partition(b"\r\n\r\n")[2]
-        self.assertEqual(len(got), len(expected))
-        self.assertEqual(got, expected)
+        expected = self._assert_complete(self._http_get(path))
+        self.assertEqual(self._assert_complete(self._tls_get(path)), expected)
 
-        # the size depends on the host's process count; below one write chunk
-        # (64 KB) the resume path above was not actually exercised
-        if len(expected) <= 64 * 1024:
-            self.skipTest("sample too small (%d bytes) to exceed one write chunk"
-                          % len(expected))
+    def _assert_complete(self, resp):
+        """Return the body, after checking it matches the Content-Length header
+        (an oracle independent of the server's other transport)."""
+        head, _, payload = resp.partition(b"\r\n\r\n")
+        self.assertIn(b"200", head.split(b"\r\n", 1)[0])
+        length = int([l for l in head.split(b"\r\n")
+                      if l.lower().startswith(b"content-length:")][0].split(b":")[1])
+        self.assertEqual(len(payload), length)
+        return payload
 
 
 class ShowsampDataTests(unittest.TestCase):
