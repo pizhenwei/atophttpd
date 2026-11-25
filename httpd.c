@@ -109,6 +109,8 @@ static char *http_content_type_javascript = "application/javascript";
 /* Budget (ms) for flushing one response to a slow client. */
 #define RESPONSE_TIMEOUT_MS 10000
 #define MAX_EVENTS 64
+/* Largest single conn_write() call, so no one write can run long. */
+#define WRITE_CHUNK (64 * 1024)
 /* Bytes flushed to one client per event-loop wakeup, so a fast reader of a
  * large response cannot starve the deadline sweep or the other connections. */
 #define WRITE_BUDGET (256 * 1024)
@@ -132,6 +134,7 @@ struct client {
     char *out; /* response head+body, contiguous, malloc'd */
     size_t outlen;
     size_t outsent;
+    size_t outpending; /* length of a write that returned -EAGAIN, 0 if none */
 
     struct client *prev, *next;
 };
@@ -534,17 +537,35 @@ static void client_write(struct client *cli)
     size_t budget = WRITE_BUDGET;
 
     while (cli->outsent < cli->outlen) {
+        if (conn_now_ms() >= cli->deadline) { /* too slow a reader */
+            client_drop(cli);
+            return;
+        }
         if (!budget) { /* yield; epoll fires again at once if still writable */
             client_arm(cli, EPOLLOUT);
             return;
         }
 
-        int ret = conn_write(conn, cli->out + cli->outsent, cli->outlen - cli->outsent);
+        /* After -EAGAIN the write must be retried with the very same arguments
+         * (an OpenSSL requirement), so replay the remembered length. */
+        size_t len = cli->outpending;
+
+        if (!len) {
+            len = cli->outlen - cli->outsent;
+            if (len > WRITE_CHUNK)
+                len = WRITE_CHUNK;
+            if (len > budget)
+                len = budget;
+        }
+
+        int ret = conn_write(conn, cli->out + cli->outsent, len);
 
         if (ret == -EAGAIN) {
+            cli->outpending = len;
             client_arm(cli, conn->wait_events);
             return;
         }
+        cli->outpending = 0;
         if (ret < 0) { /* hard error: give up on this client */
             client_drop(cli);
             return;
