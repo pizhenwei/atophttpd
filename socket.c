@@ -92,29 +92,17 @@ static int conn_socket_write(struct connection *conn, const void *data, size_t d
     if (conn->fd == -1)
         return -EINVAL;
 
-    const char *p = data;
-    size_t remaining = data_len;
-    long long deadline = conn_now_ms() + CONN_SEND_TIMEOUT_MS;
+    /* Single non-blocking write: the event loop retries once the fd is ready
+     * again, so a short count must be reported, never looped over here. */
+    ssize_t n = write(conn->fd, data, data_len);
+    if (n >= 0)
+        return (int)n;
 
-    /* Loop so a short write (the blocking socket's SO_SNDTIMEO firing mid-send)
-     * resumes instead of silently truncating the response. Stop once the overall
-     * deadline passes to bound a slow client's hold on this worker. */
-    while (remaining > 0 && conn_now_ms() < deadline) {
-        ssize_t n = write(conn->fd, p, remaining);
-        if (n > 0) {
-            p += (size_t)n;
-            remaining -= (size_t)n;
-            continue;
-        }
-        if (n < 0 && errno == EINTR)
-            continue;
-        /* nothing sent at all: surface the error; otherwise stop on partial */
-        if (remaining == data_len && n < 0)
-            return -errno;
-        break;
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        conn->wait_events = EPOLLOUT;
+        return -EAGAIN;
     }
-
-    return (int)(data_len - remaining);
+    return -errno;
 }
 
 static int conn_socket_writev(struct connection *conn, const struct iovec *iov, int iovcnt)
@@ -124,50 +112,17 @@ static int conn_socket_writev(struct connection *conn, const struct iovec *iov, 
     if (iovcnt <= 0)
         return 0;
 
-    /* Writable copy so partial writes can advance past consumed segments: the
-     * caller's iov is const. The per-call malloc is intentional and left simple
-     * -- iovcnt is tiny (the response path always passes 3) and this allocation
-     * is dwarfed by the kB-sized buffers the same path already allocates (the
-     * JSON/deflate output buffers). A stack array would avoid it but adds a
-     * branch for no measurable gain. */
-    struct iovec *vecs = malloc((size_t)iovcnt * sizeof(*vecs));
-    if (!vecs)
-        return -ENOMEM;
-    memcpy(vecs, iov, (size_t)iovcnt * sizeof(*vecs));
+    /* Single non-blocking writev; a short count is reported to the caller,
+     * which resumes from where it left off when the fd is writable again. */
+    ssize_t n = writev(conn->fd, iov, iovcnt);
+    if (n >= 0)
+        return (int)n;
 
-    size_t sent = 0;
-    int idx = 0;
-    long long deadline = conn_now_ms() + CONN_SEND_TIMEOUT_MS;
-    int rc;
-
-    while (idx < iovcnt && conn_now_ms() < deadline) {
-        ssize_t n = writev(conn->fd, &vecs[idx], iovcnt - idx);
-        if (n <= 0) {
-            if (n < 0 && errno == EINTR)
-                continue;
-            if (sent == 0 && n < 0) {
-                rc = -errno;
-                goto out;
-            }
-            break;
-        }
-
-        sent += (size_t)n;
-        size_t adv = (size_t)n;
-        while (idx < iovcnt && adv >= vecs[idx].iov_len) {
-            adv -= vecs[idx].iov_len;
-            idx++;
-        }
-        if (idx < iovcnt && adv > 0) {
-            vecs[idx].iov_base = (char *)vecs[idx].iov_base + adv;
-            vecs[idx].iov_len -= adv;
-        }
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        conn->wait_events = EPOLLOUT;
+        return -EAGAIN;
     }
-
-    rc = (int)sent;
-out:
-    free(vecs);
-    return rc;
+    return -errno;
 }
 
 static int conn_socket_read(struct connection *conn, void *buf, size_t buf_len)
@@ -175,15 +130,19 @@ static int conn_socket_read(struct connection *conn, void *buf, size_t buf_len)
     if (conn->fd == -1)
         return -EINVAL;
 
-    int ret = read(conn->fd, buf, buf_len);
-    if (ret <= 0) {
-        if (errno != EAGAIN) {
-            return -errno;
-        }
+    /* Non-blocking read: 0 is a deterministic EOF marker for the caller,
+    EAGAIN asks it to wait for readability again. */
+    ssize_t n = read(conn->fd, buf, buf_len);
+    if (n > 0)
+        return (int)n;
+    if (n == 0)
+        return 0;
+
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        conn->wait_events = EPOLLIN;
         return -EAGAIN;
     }
-
-    return ret;
+    return -errno;
 }
 
 static connection_type CT_Socket = {.get_type = conn_socket_get_type,
@@ -195,6 +154,7 @@ static connection_type CT_Socket = {.get_type = conn_socket_get_type,
                                     .conn_create = conn_socket_create,
 
                                     .listen = conn_socket_listen,
+                                    .handshake = NULL,
                                     .accept = conn_socket_accept,
                                     .shutdown = conn_socket_shutdown,
                                     .close = conn_socket_close,
